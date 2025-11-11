@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>pRESTO Single-Cell</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg:#f6f7fb; --panel:#ffffff; --card:#ffffff; --text:#111827; --muted:#6b7280;
+      --accent:#2563eb; --accent2:#60a5fa; --ok:#16a34a; --warn:#d97706; --err:#dc2626;
+      --chip-bg:#eef2ff; --chip-text:#1f2937; --border:#e5e7eb; --shadow:0 6px 20px rgba(17,24,39,.06);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text)}
+    a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+    code{background:#f3f4f6;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
+    .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1400px;margin:0 auto}
+    .left{flex:1 1 auto;min-width:640px}
+    .right{width:380px;flex:0 0 380px;position:sticky;top:12px;align-self:flex-start}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+    h1{margin:0 0 12px 0;font-size:22px;letter-spacing:.2px}
+    h2{margin:16px 0 10px 0;font-size:18px}
+    h3{margin:6px 0 8px 0;font-size:16px}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px}
+    .card{background:var(--card);padding:14px;border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow)}
+    .chip{display:inline-block;background:var(--chip-bg);color:var(--chip-text);padding:3px 8px;border-radius:999px;font-size:12px;margin-right:4px;border:1px solid var(--border)}
+    label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
+    input,select,button{font:inherit}
+    input,select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:#fff;color:var(--text)}
+    input:focus,select:focus{outline:none;border-color:#93c5fd;box-shadow:0 0 0 3px rgba(147,197,253,.45)}
+    button{background:var(--accent);border:none;color:white;border-radius:10px;padding:10px 14px;cursor:pointer}
+    button.secondary{background:#eef2ff;color:#1f2937;border:1px solid var(--border)}
+    .muted{color:var(--muted)} .mt8{margin-top:8px} .mb8{margin-bottom:8px}
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+    pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:10px;max-height:300px;overflow:auto}
+    .list{font-size:14px}
+    .flow-list{list-style:none;padding:0;margin:0}
+    .flow-item{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:#fff}
+    .flow-step{width:24px;height:24px;border-radius:999px;background:#eef2ff;color:#1f2937;display:flex;align-items:center;justify-content:center;font-size:12px;border:1px solid var(--border)}
+    .flow-label{flex:1}
+    .flow-remove{background:#fff;color:#1f2937;border:1px solid var(--border);padding:6px 8px;border-radius:8px;cursor:pointer}
+    .flow-remove:hover{background:#f3f4f6}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--border);}
+    .pill.ok{background:#ecfdf5;color:#065f46;border-color:#a7f3d0}
+    .pill.warn{background:#fffbeb;color:#92400e;border-color:#fde68a}
+    .pill.err{background:#fef2f2;color:#991b1b;border-color:#fecaca}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <main class="left">
+      <div class="panel">
+        <h1>pRESTO Single-Cell &nbsp;<span class="chip">session: <span id="sid">—</span></span></h1>
+
+        <h2>1) Start session</h2>
+        <div class="row mb8">
+          <button id="start">Start new session</button>
+          <a href="./" class="secondary" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#fff">← Bulk page</a>
+        </div>
+
+        <h2>2) Upload inputs (AIRR TSV/TSV.GZ, reference, etc.)</h2>
+        <div class="card">
+          <label>Select files (you can choose multiple)</label>
+          <input type="file" id="sc-files" multiple />
+          <div class="row mt8">
+            <button id="upload-sc">Upload</button>
+            <span id="upload-msg" class="muted"></span>
+          </div>
+          <div class="mt8 list" id="uploaded-list"></div>
+        </div>
+
+        <h2>3) Single-cell units</h2>
+        <div id="units" class="grid"></div>
+
+        <h2>State</h2>
+        <div id="state" class="mb8"></div>
+
+        <h2>Last step log</h2>
+        <pre id="log" class="mb8"></pre>
+
+        <h2>Artifacts</h2>
+        <div id="arts"></div>
+      </div>
+    </main>
+
+    <aside class="right">
+      <div class="panel">
+        <h2>Flow</h2>
+        <div class="row mt8">
+          <button id="validate" class="secondary">Validate</button>
+          <button id="runflow">Run pipeline</button>
+          <button id="clearflow" class="secondary">Clear</button>
+        </div>
+        <div class="mt8">
+          <label class="muted">Schema (click order)</label>
+          <ul id="flow" class="flow-list"></ul>
+        </div>
+        <div class="mt8">
+          <label class="muted">Validation</label>
+          <div id="validation" class="muted">—</div>
+        </div>
+        <div class="mt8">
+          <label class="muted">Pipeline state</label>
+          <div id="pstate" class="muted">idle</div>
+        </div>
+        <div class="mt8">
+          <h3>Notes</h3>
+          <div class="muted">Use “Add to flow” on any single-cell unit card to build a pipeline. Order is preserved by your clicks. Units here are independent and can operate directly on uploaded TSVs.</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+  <script src="sc.js"></script>
+</body>
+</html>

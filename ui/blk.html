@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Immun Stream backend</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg:#f6f7fb; --panel:#ffffff; --card:#ffffff; --text:#111827; --muted:#6b7280;
+      --accent:#2563eb; --accent2:#60a5fa; --ok:#16a34a; --warn:#d97706; --err:#dc2626;
+      --chip-bg:#eef2ff; --chip-text:#1f2937; --border:#e5e7eb; --shadow:0 6px 20px rgba(17,24,39,.06);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    }
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline}
+    code{background:#f3f4f6;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
+    .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1400px;margin:0 auto}
+    .left{flex:1 1 auto;min-width:660px}
+    .right{width:360px;flex:0 0 360px;position:sticky;top:12px;align-self:flex-start}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+    h1{margin:0 0 12px 0;font-size:22px;letter-spacing:.2px}
+    h2{margin:14px 0 10px 0;font-size:18px}
+    h3{margin:6px 0 8px 0;font-size:16px}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px}
+    .card{background:var(--card);padding:14px;border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow)}
+    .chip{display:inline-block;background:var(--chip-bg);color:var(--chip-text);padding:3px 8px;border-radius:999px;font-size:12px;margin-right:4px;border:1px solid var(--border)}
+    label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
+    input,select,button{font:inherit}
+    input,select{
+      width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:#ffffff;color:var(--text);
+      transition:border .15s, box-shadow .15s;
+    }
+    input:focus,select:focus{outline:none;border-color:#93c5fd;box-shadow:0 0 0 3px rgba(147,197,253,.45)}
+    button{
+      background:var(--accent);border:none;color:white;border-radius:10px;padding:10px 14px;cursor:pointer;
+      transition:filter .15s, transform .02s;
+    }
+    button:hover{filter:brightness(1.05)}
+    button:active{transform:translateY(1px)}
+    button.secondary{background:#eef2ff;color:#1f2937;border:1px solid var(--border)}
+    .muted{color:var(--muted)}
+    .mt8{margin-top:8px}
+    .mb8{margin-bottom:8px}
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+    .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .node{background:#ffffff;border:1px solid var(--border);border-radius:10px;padding:6px 10px;box-shadow:var(--shadow)}
+    .arrow{color:var(--muted);opacity:.9}
+    .progress{height:10px;background:#eef2ff;border-radius:99px;overflow:hidden;margin-top:8px;border:1px solid var(--border)}
+    .bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
+    pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:10px;max-height:260px;overflow:auto}
+    @media (max-width:1100px){ .wrap{flex-direction:column} .left{min-width:auto} .right{width:auto;position:relative;top:0} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <main class="left">
+      <div class="panel">
+        <h1>Immnun Stream &nbsp;<span class="chip">session: <span id="sid">—</span></span></h1>
+
+        <h2>1) Start / Upload</h2>
+        <div class="row mb8">
+          <button id="start">Start new session</button>
+          <div class="muted">After building the Docker image, run the container and open <code>/ui</code></div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h3>Upload reads</h3>
+            <label>R1 FASTQ(.gz)</label><input type="file" id="r1f" />
+            <label>R2 FASTQ(.gz) (optional)</label><input type="file" id="r2f" />
+            <div class="mt8"><button id="upload">Upload</button></div>
+          </div>
+
+          <div class="card">
+            <h3>Upload aux (primers/reference)</h3>
+            <label>Choose file</label><input type="file" id="auxf" />
+            <label>Store as (optional)</label><input id="auxname" placeholder="e.g. V.fasta or C.fasta" />
+            <div class="mt8 row">
+              <button id="upload-aux">Upload aux</button>
+              <span id="aux-out" class="muted"></span>
+            </div>
+            <div class="muted mt8">Primer FASTA uploads are auto-recognized and wired into MaskPrimers (V/C).</div>
+          </div>
+        </div>
+
+        <h2>2) Units</h2>
+        <div id="units" class="grid"></div>
+
+        <h2>3) Pipeline</h2>
+        <div class="row mb8">
+          <button id="pipe-validate" class="secondary">Validate</button>
+          <button id="pipe-run">Run pipeline</button>
+          <button id="pipe-clear" class="secondary">Clear</button>
+          <span id="pipe-msg" class="muted"></span>
+        </div>
+
+        <h2>State</h2>
+        <div id="state" class="mb8"></div>
+
+        <h2>Last step log</h2>
+        <pre id="log" class="mb8"></pre>
+
+        <h2>Artifacts</h2>
+        <div id="arts"></div>
+      </div>
+    </main>
+
+    <aside class="right">
+      <div class="panel">
+        <h2>Pipeline overview</h2>
+        <div class="muted">Checked units appear here in click order.</div>
+
+        <h3 class="mt8">Flow</h3>
+        <div id="flow" class="flow"></div>
+
+        <h3 class="mt8">Validation</h3>
+        <div id="validation" class="muted">—</div>
+
+        <h3 class="mt8">Run status</h3>
+        <div id="run-status" class="muted">—</div>
+        <div class="progress"><div id="run-bar" class="bar"></div></div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Immcantation Workbench</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root{
+      --bg:#f6f7fb; --panel:#ffffff; --text:#0f172a; --muted:#64748b; --border:#e5e7eb;
+      --accent:#2563eb; --accent2:#60a5fa; --shadow:0 10px 30px rgba(2,6,23,.06);
+      --ok:#16a34a; --warn:#d97706; --err:#dc2626;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:linear-gradient(180deg,#f8fafc 0%, #f1f5f9 100%);color:var(--text)}
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .brand{display:flex;align-items:center;gap:10px}
+    .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#2563eb,#60a5fa);box-shadow:var(--shadow)}
+    h1{font-size:22px;margin:0}
+    .muted{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:18px;margin-top:18px}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
+    .card h2{margin:0 0 6px 0;font-size:20px}
+    .card p{margin:6px 0 14px 0;color:var(--muted)}
+    .chip{display:inline-block;padding:2px 8px;border:1px solid var(--border);border-radius:999px;font-size:12px;background:#fff}
+    .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .btn{display:inline-block;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 14px;cursor:pointer;text-decoration:none}
+    .btn.secondary{background:#eef2ff;color:#0f172a;border:1px solid var(--border)}
+    footer{margin-top:28px;color:var(--muted);font-size:13px}
+    .icon{width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#eff6ff;border:1px solid var(--border);margin-bottom:10px}
+    .icon svg{width:24px;height:24px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo"></div>
+        <div>
+          <h1>Immcantation Workbench</h1>
+          <div class="muted">Choose an analysis surface</div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="chip">Docker backend: pRESTO / suite:4.6.0</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <!-- flask icon -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M9 3v4l-5.5 9.5A4 4 0 0 0 7 21h10a4 4 0 0 0 3.5-4.5L15 7V3" stroke-width="1.6"/>
+            <path d="M7 14h10" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <h2>Bulk amplicon (pRESTO)</h2>
+        <p>Click-to-run pipeline builder for BCR/TCR bulk FASTQ processing using pRESTO CLI tools inside the Immcantation suite.</p>
+        <div class="row">
+          <a class="btn" href="blk.html">Open bulk page</a>
+          <a class="btn secondary" href="docs">API docs</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="icon" aria-hidden="true">
+          <!-- layers icon -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M12 2l9 5-9 5-9-5 9-5z" stroke-width="1.6"/>
+            <path d="M3 12l9 5 9-5" stroke-width="1.6"/>
+            <path d="M3 17l9 5 9-5" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <h2>Single-Cell AIRR</h2>
+        <p>Upload AIRR TSVs and build a flow of single‑cell QC and filtering steps (independent units that operate on your tables).</p>
+        <div class="row">
+          <a class="btn" href="sc.html">Open single‑cell page</a>
+          <a class="btn secondary" href="https://docs.airr-community.org/en/stable/datarep/rearrangements.html" target="_blank" rel="noreferrer">AIRR spec</a>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <div>Tip: Set this file as <code>/ui/index.html</code> to make it the default landing page.</div>
+    </footer>
+  </div>
+</body>
+</html>

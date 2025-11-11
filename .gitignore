@@ -1,0 +1,16 @@
+@"
+*
+!*/
+!.gitignore
+!**/main.py
+!**/*.html
+!**/*.js
+
+# never track data
+data/
+data/**
+
+# python junk
+__pycache__/
+*.pyc
+"@ | Set-Content -NoNewline .gitignore
