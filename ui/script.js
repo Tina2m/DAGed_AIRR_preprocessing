@@ -6,6 +6,8 @@ let PIPELINE = []; // keeps {unit, label, card} in the order of user clicks
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// This page is BULK only
+const UNIT_GROUP = 'bulk';
 
 function selectedSteps(){
   // Return pipeline in click order, but drop items whose checkbox is no longer checked
@@ -106,8 +108,32 @@ async function refreshState(){
 }
 
 async function renderUnits(){
-  const r = await fetch(`/session/${SID}/units`);
-  UNITS_META = await r.json();
+  // Ask the backend for bulk-only units if it supports group filtering.
+  // If it doesn't, we still filter on the client.
+  let all = [];
+  try {
+    const res = await fetch(`/session/${SID}/units?group=bulk`);
+    all = await res.json();
+  } catch (e) {
+    // Fallback to unfiltered endpoint, will filter below
+    try {
+      const res2 = await fetch(`/session/${SID}/units`);
+      all = await res2.json();
+    } catch (e2) { all = []; }
+  }
+
+  // Client-side filter (defensive) to make sure only BULK shows up
+  UNITS_META = (all || []).filter(u => {
+    const id     = (u.id || '').toLowerCase();
+    const label  = (u.label || '').toLowerCase();
+    const group  = (u.group || '').toLowerCase(); // if backend sends it
+
+    if (group) return group === 'bulk';          // preferred path
+    if (id.startsWith('sc_')) return false;      // legacy naming
+    if (label.startsWith('sc:')) return false;   // visible label hint
+    return true;                                 // treat everything else as bulk
+  });
+
   const wrap = $('#units'); wrap.innerHTML = '';
   UNITS_META.forEach(u => {
     const card = document.createElement('div');
@@ -115,20 +141,21 @@ async function renderUnits(){
     card.dataset.unit = u.id;
     const req = (u.requires||[]).map(x=>`<span class="chip">${x}</span>`).join(' ') || '<span class="muted">none</span>';
     let paramsHTML = '';
-    for(const [k,v] of Object.entries(u.params_schema||{})){
+    for (const [k,v] of Object.entries(u.params_schema||{})) {
       const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
       const label = `<label>${esc(k)}${help}</label>`;
-      if(v.type === 'select'){
+      if (v.type === 'select') {
         const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
         paramsHTML += `${label}<select name="${esc(k)}">${opts}</select>`;
-      }else if(v.type === 'file'){
+      } else if (v.type === 'file') {
         paramsHTML += `${label}<input name="${esc(k)}" placeholder="${esc(v.accept||'')}" />` +
                       `<div class="muted">Upload in section 1 → aux; I'll fill this automatically.</div>`;
-      }else{
+      } else {
         const val = v.default ?? ''; const ph = v.placeholder ?? '';
         paramsHTML += `${label}<input name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}">`;
       }
     }
+
     card.innerHTML = `
       <h3>${esc(u.label)}</h3>
       <div class="muted">requires: ${req}</div>
@@ -137,20 +164,24 @@ async function renderUnits(){
         <button class="run">Run</button>
         <label class="row"><input type="checkbox" class="pipe-add" data-unit-id="${esc(u.id)}"> Add to pipeline</label>
       </div>`;
+
     card.querySelector('.run').addEventListener('click', ()=>runUnit(card,u.id));
     const chk = card.querySelector('.pipe-add');
     chk.addEventListener('change', () => {
       const unitId = chk.dataset.unitId || card.dataset.unit;
-      const label = (UNITS_META.find(m => m.id === unitId)?.label) || unitId;
-      if(chk.checked){
-        // remove any existing then push to preserve click order
+      const meta = UNITS_META.find(m => m.id === unitId) || {};
+      const label = meta.label || unitId;
+
+      if (chk.checked) {
+        // keep click order
         PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
         PIPELINE.push({unit: unitId, label, card});
-      }else{
+      } else {
         PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
       }
       drawFlow();
     });
+
     wrap.appendChild(card);
   });
 }
@@ -190,7 +221,13 @@ function validatePipeline(){
   if(steps.length===0){ $('#validation').innerHTML = '<span class="warn">No steps selected.</span>'; return; }
   const msgs = [];
   let okAll = true;
-  for(const st of steps){
+  // Filter out any single-cell units that might have been added
+  const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
+  if(bulkSteps.length !== steps.length){
+    okAll = false;
+    msgs.push(`<div class="err">• Single-cell units detected and removed from pipeline</div>`);
+  }
+  for(const st of bulkSteps){
     let res = {ok:true,msg:'OK'};
     if(st.unit === 'mask_primers') res = validateMaskPrimers(st);
     else if(st.unit.startsWith('assemble_')) res = validateAssemble(st);
@@ -205,16 +242,21 @@ function validatePipeline(){
 // ===== Run Pipeline =====
 async function runPipeline(){
   const steps = selectedSteps();
-  if(steps.length === 0){ pipeMsg('No steps selected','warn'); return; }
+  // Filter out any single-cell units
+  const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
+  if(bulkSteps.length === 0){ pipeMsg('No bulk steps selected','warn'); return; }
+  if(bulkSteps.length !== steps.length){
+    pipeMsg('Single-cell units removed from pipeline','warn');
+  }
   validatePipeline(); // show current validation info
-  setRunStatus('Starting…'); setProgress(0, steps.length);
+  setRunStatus('Starting…'); setProgress(0, bulkSteps.length);
 
-  for(let i=0;i<steps.length;i++){
-    const s = steps[i];
-    setRunStatus(`Running <b>${esc(s.label)}</b> (${i+1}/${steps.length})`);
+  for(let i=0;i<bulkSteps.length;i++){
+    const s = bulkSteps[i];
+    setRunStatus(`Running <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`);
     const ok = await runUnit(s.card, s.unit);
-    setProgress(i+1, steps.length);
-    if(!ok){ setRunStatus(`Failed at <b>${esc(s.label)}</b> (${i+1}/${steps.length})`); pipeMsg('Pipeline failed','err'); return; }
+    setProgress(i+1, bulkSteps.length);
+    if(!ok){ setRunStatus(`Failed at <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`); pipeMsg('Pipeline failed','err'); return; }
   }
   setRunStatus('Finished ✅'); pipeMsg('Pipeline finished','ok');
 }
