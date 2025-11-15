@@ -1,17 +1,27 @@
+// Single-Cell page logic with flow builder/validator (module)
 let SID = null;
 let UNITS_META = [];
 let FLOW = []; // [{unitId,label,params}]
 let running = false;
 
-const $  = (sel, root=document) => root.querySelector(sel);
-const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
-const esc = (s) => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const $  = sel => document.querySelector(sel);
+const $$ = sel => document.querySelectorAll(sel);
+const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+// Persist session id (hidden from UI)
+function persistSid(id){
+  window.__SC_SID = id;                              // quick console access
+  try { localStorage.setItem('sc_last_sid', id); } catch (_) {}
+  console.info('%c[SC]%c session', 'color:#22d3ee', 'color:inherit', id);
+}
+
+// ---- session / uploads -------------------------------------------------------
 async function startSession(){
   const r = await fetch('/session/start',{method:'POST'});
   const j = await r.json();
   SID = j.session_id;
-  $('#sid').textContent = SID;
+  persistSid(SID);
+
   FLOW = [];
   renderFlow();
   await renderUnits();
@@ -45,6 +55,7 @@ function listUploaded(fileList){
   $('#uploaded-list').innerHTML = names.length ? 'Uploaded: ' + names.join(', ') : '';
 }
 
+// ---- units rendering ---------------------------------------------------------
 async function renderUnits(){
   const r = await fetch(`/session/${SID}/units`);
   const all = await r.json();
@@ -59,7 +70,7 @@ async function renderUnits(){
     card.className = 'card';
     card.dataset.unit = u.id;
     let paramsHTML = '';
-    for(const [k,v] of Object.entries(u.params_schema||{})){
+    for(const [k,v] of Object.entries(u.params_schema||{}) ){
       const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
       const label = `<label>${esc(k)}${help}</label>`;
       if(v.type === 'select'){
@@ -98,17 +109,16 @@ async function runSingle(card, unitId, label){
   await runUnit({unitId, label, params});
 }
 
+// ---- flow builder / renderer -------------------------------------------------
 function addToFlow(card, unitId, label){
   const params = collectParams(card);
   FLOW.push({unitId, label, params});
   renderFlow();
 }
-
 function removeFromFlow(idx){
   FLOW.splice(idx,1);
   renderFlow();
 }
-
 function renderFlow(){
   const ul = $('#flow'); ul.innerHTML = '';
   if(FLOW.length === 0){
@@ -127,6 +137,7 @@ function renderFlow(){
   $('#validation').innerHTML = '—';
 }
 
+// ---- validation --------------------------------------------------------------
 function validateFlow(){
   if(FLOW.length === 0){
     $('#validation').innerHTML = `<span class="pill err">Empty flow</span> Add steps with “Add to flow”.`;
@@ -157,6 +168,7 @@ function validateFlow(){
   return {ok, msgs};
 }
 
+// ---- run flow ---------------------------------------------------------------
 async function runFlow(){
   if(running) return;
   const v = validateFlow();
@@ -209,6 +221,7 @@ async function runUnit(step){
   }
 }
 
+// ---- state / artifacts ------------------------------------------------------
 async function refreshState(){
   const r = await fetch(`/session/${SID}/state`);
   const s = await r.json();
@@ -220,17 +233,13 @@ async function refreshState(){
   $('#arts').innerHTML = arts || '<span class="muted">none</span>';
 }
 
-function wire(){
-  $('#start').addEventListener('click', startSession);
+// ---- init -------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', async () => {
+  // auto-start a new session silently (no UI buttons)
+  await startSession();
+
   $('#upload-sc').addEventListener('click', uploadSCFiles);
   $('#validate').addEventListener('click', validateFlow);
   $('#runflow').addEventListener('click', runFlow);
   $('#clearflow').addEventListener('click', ()=>{ FLOW=[]; renderFlow(); $('#validation').textContent='—'; $('#pstate').textContent='idle'; });
-  startSession();
-}
-
-if (document.readyState === 'loading'){
-  document.addEventListener('DOMContentLoaded', wire, { once:true });
-} else {
-  wire();
-}
+});

@@ -4,22 +4,23 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="page" content="sc" />
+  <title>pRESTO Single-Cell</title>
+
+  <!-- Shared header -->
   <link rel="stylesheet" href="assets/css/nav.css?v=20250305" />
   <script src="assets/js/nav.js?v=20250305" defer></script>
-  <title>pRESTO Single-Cell</title>
+
+  <!-- Page styles (moved from inline to sc.css) -->
   <link rel="stylesheet" href="assets/css/sc.css?v=20250305" />
 </head>
 <body>
   <div class="wrap">
     <main class="left">
       <div class="panel">
-        <h1>pRESTO Single-Cell &nbsp;<span class="chip">session: <span id="sid">—</span></span></h1>
-        <h2>1) Start session</h2>
-        <div class="row mb8">
-          <button id="start">Start new session</button>
-          <a href="./blk.html" class="secondary" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#fff">← Bulk page</a>
-        </div>
-        <h2>2) Upload inputs (AIRR TSV/TSV.GZ, reference, etc.)</h2>
+        <h1>pRESTO Single-Cell</h1>
+
+        <!-- 1) Upload -->
+        <h2>1) Upload inputs (AIRR TSV/TSV.GZ, reference, etc.)</h2>
         <div class="card">
           <label>Select files (you can choose multiple)</label>
           <input type="file" id="sc-files" multiple />
@@ -29,16 +30,23 @@
           </div>
           <div class="mt8 list" id="uploaded-list"></div>
         </div>
-        <h2>3) Single-cell units</h2>
+
+        <!-- 2) Units -->
+        <h2>2) Single-cell units</h2>
         <div id="units" class="grid"></div>
+
+        <!-- State / logs / artifacts -->
         <h2>State</h2>
         <div id="state" class="mb8"></div>
+
         <h2>Last step log</h2>
         <pre id="log" class="mb8"></pre>
+
         <h2>Artifacts</h2>
         <div id="arts"></div>
       </div>
     </main>
+
     <aside class="right">
       <div class="panel">
         <h2>Flow</h2>
@@ -66,6 +74,8 @@
       </div>
     </aside>
   </div>
+
+  <!-- Load page logic as a module -->
   <script type="module" src="assets/js/sc.js?v=20250305"></script>
 </body>
 </html>
