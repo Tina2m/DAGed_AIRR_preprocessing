@@ -1,7 +1,14 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="page" content="bulk">
+  <link rel="stylesheet" href="assets/css/nav.css?v=20250305">
+  <script src="assets/js/nav.js?v=20250305" defer></script>
+  <link rel="stylesheet" href="assets/css/bulk.css?v=20250305" />
+
   <title>Immun Stream backend</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
@@ -54,7 +61,7 @@
     .node{background:#ffffff;border:1px solid var(--border);border-radius:10px;padding:6px 10px;box-shadow:var(--shadow)}
     .arrow{color:var(--muted);opacity:.9}
     .progress{height:10px;background:#eef2ff;border-radius:99px;overflow:hidden;margin-top:8px;border:1px solid var(--border)}
-    .bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
+    .progress .fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
     pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:10px;max-height:260px;overflow:auto}
     @media (max-width:1100px){ .wrap{flex-direction:column} .left{min-width:auto} .right{width:auto;position:relative;top:0} }
   </style>
@@ -126,7 +133,7 @@
 
         <h3 class="mt8">Run status</h3>
         <div id="run-status" class="muted">—</div>
-        <div class="progress"><div id="run-bar" class="bar"></div></div>
+        div class="progress"><div id="run-bar" class="fill"></div></div>
       </div>
     </aside>
   </div>

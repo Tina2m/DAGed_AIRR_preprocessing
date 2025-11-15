@@ -4,20 +4,82 @@
   <meta charset="utf-8">
   <title>Immcantation Workbench</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+
   <style>
     :root{
       --bg:#f6f7fb; --panel:#ffffff; --text:#0f172a; --muted:#64748b; --border:#e5e7eb;
       --accent:#2563eb; --accent2:#60a5fa; --shadow:0 10px 30px rgba(2,6,23,.06);
       --ok:#16a34a; --warn:#d97706; --err:#dc2626;
+
+      /* nav + gradient */
+      --nav-bg:#0b1220;
+      --nav-border:rgba(255,255,255,.08);
+      --nav-text:#cbd5e1;
+      --nav-text-active:#ffffff;
+      --grad-from:#22d3ee;   /* cyan-400 */
+      --grad-to:#2563eb;     /* blue-600 */
     }
+
     *{box-sizing:border-box}
-    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:linear-gradient(180deg,#f8fafc 0%, #f1f5f9 100%);color:var(--text)}
+    body{
+      margin:0;
+      font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      background:linear-gradient(180deg,#f8fafc 0%, #f1f5f9 100%);
+      color:var(--text)
+    }
     a{color:var(--accent);text-decoration:none}
     a:hover{text-decoration:underline}
+
+    /* ===== Top header (nav) ===== */
+    .site-header{
+      position:sticky; top:0; z-index:1000;
+      background:linear-gradient(180deg, rgba(11,18,32,.92), rgba(11,18,32,.86));
+      backdrop-filter:saturate(160%) blur(8px);
+      border-bottom:1px solid var(--nav-border);
+    }
+    .site-header .bar{
+      max-width:1280px; margin:0 auto; padding:12px 20px;
+      display:flex; align-items:center; gap:18px;
+    }
+    .brand{display:flex; align-items:center; gap:12px; color:#e5e7eb; text-decoration:none}
+    .brand .dna{width:28px; height:28px; display:block}
+    .brand .title{font-weight:700; letter-spacing:.2px; font-size:22px}
+    .nav{margin-left:auto; display:flex; gap:10px; align-items:center}
+    .nav-link{
+      --pad-x:14px;
+      color:var(--nav-text); text-decoration:none;
+      padding:8px var(--pad-x);
+      border-radius:10px; border:1px solid transparent;
+      transition:background .15s, color .15s, border-color .15s, transform .02s;
+    }
+    .nav-link:hover{color:#fff; background:rgba(255,255,255,.06); border-color:var(--nav-border)}
+    .nav-link:active{transform:translateY(1px)}
+    .nav-link.active{
+      color:var(--nav-text-active);
+      background:linear-gradient(135deg,var(--grad-from),var(--grad-to));
+      border-color:transparent;
+      box-shadow:0 6px 18px rgba(37,99,235,.35);
+    }
+    @media (max-width:720px){
+      .brand .title{font-size:18px}
+      .nav{gap:6px}
+      .nav-link{--pad-x:10px; padding:7px var(--pad-x); font-size:14px}
+    }
+    /* gradient text utility (use anywhere you want the same “keys” gradient) */
+    .grad-text{
+      background:linear-gradient(135deg,var(--grad-from),var(--grad-to));
+      -webkit-background-clip:text; background-clip:text; color:transparent;
+    }
+
+    /* ===== Page content (unchanged) ===== */
     .wrap{max-width:1100px;margin:0 auto;padding:24px}
-    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
-    .brand{display:flex;align-items:center;gap:10px}
-    .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#2563eb,#60a5fa);box-shadow:var(--shadow)}
+    header.page-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .brand-box{display:flex;align-items:center;gap:10px}
+    .logo{
+      width:36px;height:36px;border-radius:10px;
+      background:linear-gradient(135deg,var(--grad-from),var(--grad-to));
+      box-shadow:var(--shadow)
+    }
     h1{font-size:22px;margin:0}
     .muted{color:var(--muted)}
     .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:18px;margin-top:18px}
@@ -34,17 +96,46 @@
   </style>
 </head>
 <body>
+
+  <!-- ===== New top navigation header ===== -->
+  <header class="site-header" role="banner">
+    <div class="bar">
+      <a class="brand" href="/ui/">
+        <svg class="dna" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="g-dna" x1="0" y1="0" x2="24" y2="24">
+              <stop stop-color="var(--grad-from)"/><stop offset="1" stop-color="var(--grad-to)"/>
+            </linearGradient>
+          </defs>
+          <path d="M5 4c4 0 6 4 7 8s3 8 7 8M5 20c4 0 6-4 7-8S15 4 19 4"
+                stroke="url(#g-dna)" stroke-width="2" stroke-linecap="round"/>
+          <path d="M7 8h10M7 16h10"
+                stroke="url(#g-dna)" stroke-width="2" stroke-linecap="round" opacity=".75"/>
+        </svg>
+        <span class="title">ImmunoStream</span>
+      </a>
+
+      <nav class="nav" aria-label="Primary">
+        <a class="nav-link" href="/ui/">Home</a>
+        <a class="nav-link" href="/ui/blk.html">Bulk amplicon</a>
+        <a class="nav-link" href="/ui/sc.html">Single-Cell AIRR</a>
+        <a class="nav-link" href="/ui/docs.html">Documents</a>
+      </nav>
+    </div>
+  </header>
+
   <div class="wrap">
-    <header>
-      <div class="brand">
+    <!-- keep original page header/content -->
+    <header class="page-head">
+      <div class="brand-box">
         <div class="logo"></div>
         <div>
-          <h1>Immcantation Workbench</h1>
+          <h1>AIRR Data Preprocessing Workbench</h1>
           <div class="muted">Choose an analysis surface</div>
         </div>
       </div>
       <div class="row">
-        <span class="chip">Docker backend: pRESTO / suite:4.6.0</span>
+        <span class="chip">Powerd by: pRESTO / suite:4.6.0</span>
       </div>
     </header>
 
@@ -58,10 +149,10 @@
           </svg>
         </div>
         <h2>Bulk amplicon (pRESTO)</h2>
-        <p>Click-to-run pipeline builder for BCR/TCR bulk FASTQ processing using pRESTO CLI tools inside the Immcantation suite.</p>
+        <p>Click-to-run pipeline builder for BCR/TCR bulk FASTQ processing.</p>
         <div class="row">
           <a class="btn" href="blk.html">Open bulk page</a>
-          <a class="btn secondary" href="docs">API docs</a>
+          <!-- removed “API docs” per request -->
         </div>
       </div>
 
@@ -75,17 +166,32 @@
           </svg>
         </div>
         <h2>Single-Cell AIRR</h2>
-        <p>Upload AIRR TSVs and build a flow of single‑cell QC and filtering steps (independent units that operate on your tables).</p>
+        <p>Upload AIRR TSVs and build a flow of single-cell QC and filtering steps.</p>
         <div class="row">
-          <a class="btn" href="sc.html">Open single‑cell page</a>
-          <a class="btn secondary" href="https://docs.airr-community.org/en/stable/datarep/rearrangements.html" target="_blank" rel="noreferrer">AIRR spec</a>
+          <a class="btn" href="sc.html">Open single-cell page</a>
+          <!-- removed “AIRR spec” per request -->
         </div>
       </div>
     </div>
 
     <footer>
-      <div>Tip: Set this file as <code>/ui/index.html</code> to make it the default landing page.</div>
+      <div>Tip: AIRR Data preprocessing.</div>
     </footer>
   </div>
+
+  <script>
+    // Highlight active tab automatically
+    (function(){
+      const here = location.pathname.replace(/\/+$/,'');
+      document.querySelectorAll('.nav .nav-link').forEach(a=>{
+        const p = (a.getAttribute('href') || '').replace(/\/+$/,'');
+        if (p && (p === here || (p !== '/ui' && here.startsWith(p)))) a.classList.add('active');
+        if (!document.querySelector('.nav .nav-link.active') && (here === '' || here === '/ui' || here === '/ui/index.html')) {
+          const home = document.querySelector('.nav .nav-link[href="/ui/"]');
+          if (home) home.classList.add('active');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
