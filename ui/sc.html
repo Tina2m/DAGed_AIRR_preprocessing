@@ -1,49 +1,70 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="page" content="sc" />
-  <title>pRESTO Single-Cell</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="page" content="sc">
+  <title>Single‑Cell AIRR · ImmunoStream</title>
 
-  <!-- Shared header -->
-  <link rel="stylesheet" href="assets/css/nav.css?v=20250305" />
-  <script src="assets/js/nav.js?v=20250305" defer></script>
+  <!-- Shared nav -->
+  <link rel="stylesheet" href="assets/css/nav.css?v=20250306">
+  <script src="assets/js/nav.js?v=20250306" defer></script>
 
-  <!-- Page styles (moved from inline to sc.css) -->
-  <link rel="stylesheet" href="assets/css/sc.css?v=20250305" />
+  <!-- Page styles -->
+  <link rel="stylesheet" href="assets/css/sc.css?v=20250306">
 </head>
 <body>
+  <!-- nav.js injects the header here -->
+
   <div class="wrap">
     <main class="left">
       <div class="panel">
-        <h1>pRESTO Single-Cell</h1>
+        <h1>Single‑Cell AIRR</h1>
+        <p class="muted mb12">
+          Upload AIRR TSV/TSV.GZ files, then add steps to the flow (right). Session is created automatically.
+        </p>
 
-        <!-- 1) Upload -->
-        <h2>1) Upload inputs (AIRR TSV/TSV.GZ, reference, etc.)</h2>
-        <div class="card">
-          <label>Select files (you can choose multiple)</label>
-          <input type="file" id="sc-files" multiple />
-          <div class="row mt8">
-            <button id="upload-sc">Upload</button>
-            <span id="upload-msg" class="muted"></span>
+        <section aria-labelledby="uploading">
+          <h2 id="uploading">Upload inputs</h2>
+          <div class="card">
+            <label>Select files (you can choose multiple)</label>
+            <input type="file" id="sc-files" multiple />
+            <div class="row mt8">
+              <button id="upload-sc">Upload</button>
+              <span id="upload-msg" class="muted"></span>
+            </div>
+            <div class="mt8 list" id="uploaded-list"></div>
           </div>
-          <div class="mt8 list" id="uploaded-list"></div>
-        </div>
+        </section>
 
-        <!-- 2) Units -->
-        <h2>2) Single-cell units</h2>
-        <div id="units" class="grid"></div>
+        <section aria-labelledby="units">
+          <div class="units-toolbar">
+            <h2 id="units">Units</h2>
+            <div class="grow"></div>
+            <input id="unit-search" placeholder="Search units or parameters…" aria-label="Search units">
+            <button id="expAll" class="secondary">Expand all</button>
+            <button id="colAll" class="secondary">Collapse all</button>
+          </div>
 
-        <!-- State / logs / artifacts -->
-        <h2>State</h2>
-        <div id="state" class="mb8"></div>
+          <div id="groups" class="groups">
+            <!-- JS builds grouped accordions here -->
+          </div>
+        </section>
 
-        <h2>Last step log</h2>
-        <pre id="log" class="mb8"></pre>
+        <section aria-labelledby="state">
+          <h2 id="state">State</h2>
+          <div id="statebox" class="mb8"></div>
+        </section>
 
-        <h2>Artifacts</h2>
-        <div id="arts"></div>
+        <section aria-labelledby="lastlog">
+          <h2 id="lastlog">Last step log</h2>
+          <pre id="log" class="mb8"></pre>
+        </section>
+
+        <section aria-labelledby="arts">
+          <h2 id="arts-h">Artifacts</h2>
+          <div id="arts"></div>
+        </section>
       </div>
     </main>
 
@@ -69,13 +90,12 @@
         </div>
         <div class="mt8">
           <h3>Notes</h3>
-          <div class="muted">Use “Add to flow” on any single-cell unit card to build a pipeline. Order is preserved by your clicks. Units here are independent and can operate directly on uploaded TSVs.</div>
+          <div class="muted">Use “Add to flow” on any card to build a pipeline. Order is preserved by your clicks. Units here are independent and operate on uploaded TSVs.</div>
         </div>
       </div>
     </aside>
   </div>
 
-  <!-- Load page logic as a module -->
-  <script type="module" src="assets/js/sc.js?v=20250305"></script>
+  <script type="module" src="assets/js/sc.js?v=20250306"></script>
 </body>
 </html>

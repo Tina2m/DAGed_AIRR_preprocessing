@@ -1,4 +1,4 @@
-// Single-Cell page logic with flow builder/validator (module)
+// Single-Cell page with grouped accordions, search, and compact cards
 let SID = null;
 let UNITS_META = [];
 let FLOW = []; // [{unitId,label,params}]
@@ -8,32 +8,20 @@ const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-// Persist session id (hidden from UI)
-function persistSid(id){
-  window.__SC_SID = id;                              // quick console access
-  try { localStorage.setItem('sc_last_sid', id); } catch (_) {}
-  console.info('%c[SC]%c session', 'color:#22d3ee', 'color:inherit', id);
-}
-
-// ---- session / uploads -------------------------------------------------------
-async function startSession(){
+// ----- Session (auto) -----
+async function ensureSession(){
+  if(SID) return SID;
   const r = await fetch('/session/start',{method:'POST'});
   const j = await r.json();
   SID = j.session_id;
-  persistSid(SID);
-
-  FLOW = [];
-  renderFlow();
-  await renderUnits();
+  window.__SID__ = SID;      // keep accessible, not visible
   await refreshState();
-  $('#log').textContent = '';
-  $('#upload-msg').textContent = '';
-  $('#uploaded-list').textContent = '';
-  $('#validation').textContent = '—';
-  $('#pstate').textContent = 'idle';
+  return SID;
 }
 
+// ----- Upload -----
 async function uploadSCFiles(){
+  await ensureSession();
   const files = $('#sc-files').files;
   if(!files || !files.length){ alert('Choose at least one file'); return; }
   $('#upload-msg').textContent = `Uploading ${files.length} file(s)…`;
@@ -46,52 +34,94 @@ async function uploadSCFiles(){
     if(r.ok) ok++;
   }
   $('#upload-msg').textContent = `Uploaded ${ok}/${files.length} files.`;
-  await refreshState();
   listUploaded(files);
+  await refreshState();
 }
-
 function listUploaded(fileList){
   const names = Array.from(fileList).map(f => esc(f.name));
   $('#uploaded-list').innerHTML = names.length ? 'Uploaded: ' + names.join(', ') : '';
 }
 
-// ---- units rendering ---------------------------------------------------------
-async function renderUnits(){
-  const r = await fetch(`/session/${SID}/units`);
-  const all = await r.json();
-  UNITS_META = all.filter(u => (u.id || '').startsWith('sc_'));
-  const wrap = $('#units'); wrap.innerHTML = '';
-  if(UNITS_META.length === 0){
-    wrap.innerHTML = '<div class="muted">No single-cell units registered yet.</div>';
-    return;
+// ----- Units rendering (grouped) -----
+const GROUPS = [
+  { id:'merge',    title:'I/O & Merge',       match:u => (u.id||'').includes('merge') },
+  { id:'qc',       title:'QC & Filtering',    match:u => /(filter|remove)/.test(u.id||'') },
+  { id:'other',    title:'Other',             match:u => true }
+];
+function groupOf(u){
+  for(const g of GROUPS){ if(g.match(u)) return g.id; }
+  return 'other';
+}
+function renderGroups(units){
+  const wrap = $('#groups'); wrap.innerHTML = '';
+  const buckets = Object.fromEntries(GROUPS.map(g=>[g.id, []]));
+  units.forEach(u => buckets[groupOf(u)].push(u));
+
+  for(const g of GROUPS){
+    if(buckets[g.id].length === 0) continue;
+    const container = document.createElement('div');
+    container.className = 'unit-group open';
+    container.dataset.group = g.id;
+    container.innerHTML = `
+      <div class="group-head" role="button" tabindex="0">
+        <h3>${esc(g.title)}</h3>
+        <span class="count">${buckets[g.id].length}</span>
+      </div>
+      <div class="group-body"></div>`;
+    const body = container.querySelector('.group-body');
+    buckets[g.id].forEach(u => body.appendChild(buildUnitCard(u)));
+    // toggle
+    const head = container.querySelector('.group-head');
+    const toggle = () => container.classList.toggle('open');
+    head.addEventListener('click', toggle);
+    head.addEventListener('keypress', e => { if(e.key==='Enter' || e.key===' ') { e.preventDefault(); toggle(); }});
+    wrap.appendChild(container);
   }
-  UNITS_META.forEach(u => {
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.dataset.unit = u.id;
-    let paramsHTML = '';
-    for(const [k,v] of Object.entries(u.params_schema||{}) ){
-      const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
-      const label = `<label>${esc(k)}${help}</label>`;
-      if(v.type === 'select'){
-        const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
-        paramsHTML += `${label}<select name="${esc(k)}">${opts}</select>`;
-      }else{
-        const val = v.default ?? ''; const ph = v.placeholder ?? '';
-        paramsHTML += `${label}<input name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}">`;
-      }
+}
+
+function buildUnitCard(u){
+  const card = document.createElement('div');
+  card.className = 'unit-card';
+  card.dataset.unit = u.id;
+
+  const requires = (u.requires||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join(' ') || '<span class="muted">none</span>';
+  let paramsHTML = '';
+  for (const [k,v] of Object.entries(u.params_schema||{})) {
+    const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
+    const label = `<label>${esc(k)}${help}</label>`;
+    if (v.type === 'select') {
+      const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
+      paramsHTML += `${label}<select name="${esc(k)}">${opts}</select>`;
+    } else {
+      const val = v.default ?? ''; const ph = v.placeholder ?? '';
+      const t = (v.type === 'int' || v.type === 'number') ? 'number' : 'text';
+      paramsHTML += `${label}<input type="${t}" name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}">`;
     }
-    card.innerHTML = `
-      <h3>${esc(u.label)}</h3>
-      <div class="mt8">${paramsHTML}</div>
+  }
+
+  card.innerHTML = `
+    <div class="uc-head">
+      <div class="uc-title">${esc(u.label)}</div>
+      <div class="req">requires: ${requires}</div>
+      <button class="params-toggle" title="Show/Hide parameters">Parameters</button>
+    </div>
+    <div class="params">
+      <div class="params-wrap">${paramsHTML || '<div class="muted">No parameters</div>'}</div>
       <div class="row mt8">
         <button class="run">Run</button>
         <button class="secondary addflow">Add to flow</button>
-      </div>`;
-    card.querySelector('.run').addEventListener('click', ()=>runSingle(card, u.id, u.label));
-    card.querySelector('.addflow').addEventListener('click', ()=>addToFlow(card, u.id, u.label));
-    wrap.appendChild(card);
+      </div>
+    </div>`;
+
+  // Behavior
+  const pwrap = card.querySelector('.params-wrap');
+  card.querySelector('.params-toggle').addEventListener('click', ()=>{
+    pwrap.classList.toggle('open');
   });
+  card.querySelector('.run').addEventListener('click', ()=>runSingle(card, u.id, u.label));
+  card.querySelector('.addflow').addEventListener('click', ()=>addToFlow(card, u.id, u.label));
+
+  return card;
 }
 
 function collectParams(card){
@@ -104,12 +134,51 @@ function collectParams(card){
   return params;
 }
 
-async function runSingle(card, unitId, label){
-  const params = collectParams(card);
-  await runUnit({unitId, label, params});
+async function renderUnits(){
+  await ensureSession();
+  let all = [];
+  try {
+    const res = await fetch(`/session/${SID}/units?group=sc`);
+    all = await res.json();
+  } catch (e) {
+    try {
+      const res2 = await fetch(`/session/${SID}/units`);
+      all = await res2.json();
+    } catch (e2) { all = []; }
+  }
+  // filter SC
+  UNITS_META = (all || []).filter(u => (u.group && u.group==='sc') || (u.id||'').startsWith('sc_') || (u.label||'').toLowerCase().startsWith('sc:'));
+  renderGroups(UNITS_META);
 }
 
-// ---- flow builder / renderer -------------------------------------------------
+// Search
+function applySearch(){
+  const q = ($('#unit-search').value || '').trim().toLowerCase();
+  const cards = Array.from($$('.unit-card'));
+  const groups = Array.from($$('.unit-group'));
+  // per-card show/hide
+  cards.forEach(c => {
+    const unitId = (c.dataset.unit||'').toLowerCase();
+    const title = (c.querySelector('.uc-title')?.textContent||'').toLowerCase();
+    const req = (c.querySelector('.req')?.textContent||'').toLowerCase();
+    const hay = [unitId,title,req].join(' ');
+    const hit = !q || hay.includes(q);
+    c.style.display = hit ? '' : 'none';
+  });
+  // hide empty groups
+  groups.forEach(g => {
+    const hasAny = Array.from(g.querySelectorAll('.unit-card')).some(c => c.style.display !== 'none');
+    g.style.display = hasAny ? '' : 'none';
+    // auto open groups when searching
+    if(q && hasAny) g.classList.add('open');
+  });
+}
+
+// Expand / Collapse all
+function expandAll(){ $$('.unit-group').forEach(g=>g.classList.add('open')); }
+function collapseAll(){ $$('.unit-group').forEach(g=>g.classList.remove('open')); }
+
+// ----- Flow builder -----
 function addToFlow(card, unitId, label){
   const params = collectParams(card);
   FLOW.push({unitId, label, params});
@@ -137,7 +206,7 @@ function renderFlow(){
   $('#validation').innerHTML = '—';
 }
 
-// ---- validation --------------------------------------------------------------
+// ----- Validation & run -----
 function validateFlow(){
   if(FLOW.length === 0){
     $('#validation').innerHTML = `<span class="pill err">Empty flow</span> Add steps with “Add to flow”.`;
@@ -168,16 +237,11 @@ function validateFlow(){
   return {ok, msgs};
 }
 
-// ---- run flow ---------------------------------------------------------------
 async function runFlow(){
   if(running) return;
   const v = validateFlow();
   if(!v.ok){
     alert('Please fix flow issues and try again.');
-    return;
-  }
-  if(FLOW.length === 0){
-    alert('No steps to run.');
     return;
   }
   running = true;
@@ -197,6 +261,7 @@ async function runFlow(){
 }
 
 async function runUnit(step){
+  await ensureSession();
   try{
     const r = await fetch(`/session/${SID}/run`, {
       method:'POST',
@@ -221,25 +286,31 @@ async function runUnit(step){
   }
 }
 
-// ---- state / artifacts ------------------------------------------------------
+// ----- State / artifacts -----
 async function refreshState(){
+  if(!SID) return;
   const r = await fetch(`/session/${SID}/state`);
   const s = await r.json();
-  const chips = Object.entries(s.current||{}).map(([k,v]) => `<span class="chip">${esc(k)}: ${esc(v)}</span>`).join(' ');
-  $('#state').innerHTML = chips || '<span class="muted">no state</span>';
+  const chips = Object.entries(s.current||{}).map(([k,v]) => `<span class="pill">${esc(k)}: ${esc(v)}</span>`).join(' ');
+  $('#statebox').innerHTML = chips || '<span class="muted">no state</span>';
   const arts = Object.values(s.artifacts||{}).map(a =>
     `<div>${esc(a.name)} — <a href="/session/${SID}/download/${encodeURIComponent(a.name)}">download</a></div>`
   ).join('');
   $('#arts').innerHTML = arts || '<span class="muted">none</span>';
 }
 
-// ---- init -------------------------------------------------------------------
+// ----- Init -----
 document.addEventListener('DOMContentLoaded', async () => {
-  // auto-start a new session silently (no UI buttons)
-  await startSession();
-
+  // wire buttons
   $('#upload-sc').addEventListener('click', uploadSCFiles);
   $('#validate').addEventListener('click', validateFlow);
   $('#runflow').addEventListener('click', runFlow);
   $('#clearflow').addEventListener('click', ()=>{ FLOW=[]; renderFlow(); $('#validation').textContent='—'; $('#pstate').textContent='idle'; });
+  $('#unit-search').addEventListener('input', applySearch);
+  $('#expAll').addEventListener('click', expandAll);
+  $('#colAll').addEventListener('click', collapseAll);
+
+  await ensureSession();
+  await renderUnits();
+  applySearch(); // initialize
 });

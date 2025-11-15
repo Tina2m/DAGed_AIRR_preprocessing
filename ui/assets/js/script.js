@@ -9,6 +9,26 @@ const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&
 // This page is BULK only
 const UNIT_GROUP = 'bulk';
 
+/* ---------- Category config to reduce scrolling ---------- */
+const CATEGORIES = {
+  "Filtering and Quality Control": [
+    "filter_quality","filter_length","filter_missing",
+    "filter_repeats","filter_trimqual","filter_maskqual"
+  ],
+  "Tecnical processing(Primers)": [
+    "mask_primers"
+  ],
+  "Pairing & Assembly": [
+    "pairseq","assemble_align","assemble_join","assemble_sequential"
+  ],
+  "Clustering & Consensus": [
+    "collapse_seq","build_consensus"
+  ],
+};
+const CAT_BY_ID = {};
+Object.entries(CATEGORIES).forEach(([cat, ids])=>ids.forEach(id=>CAT_BY_ID[id]=cat));
+function unitCategory(id){ return CAT_BY_ID[id] || "Other"; }
+
 function selectedSteps(){
   // Return pipeline in click order, but drop items whose checkbox is no longer checked
   PIPELINE = PIPELINE.filter(s => s.card && s.card.querySelector('.pipe-add')?.checked);
@@ -107,22 +127,80 @@ async function refreshState(){
   window.__SESSION_STATE__ = s;
 }
 
+/* -------------------- New grouped render -------------------- */
+function makeUnitCard(u){
+  const card = document.createElement('div');
+  card.className = 'card compact';
+  card.dataset.unit = u.id;
+
+  const req = (u.requires||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ') || '<span class="muted">none</span>';
+  let paramsHTML = '';
+  if (u.params_schema && Object.keys(u.params_schema).length){
+    let inner = '';
+    for (const [k,v] of Object.entries(u.params_schema||{})){
+      const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
+      const label = `<label>${esc(k)}${help}</label>`;
+      if (v.type === 'select') {
+        const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
+        inner += `${label}<select name="${esc(k)}">${opts}</select>`;
+      } else if (v.type === 'file') {
+        inner += `${label}<input name="${esc(k)}" placeholder="${esc(v.accept||'')}" />` +
+                 `<div class="muted">Upload in section 1 → aux; I'll fill this automatically.</div>`;
+      } else {
+        const val = v.default ?? ''; const ph = v.placeholder ?? '';
+        const typeAttr = (v.type === 'int') ? 'type="number"' : 'type="text"';
+        inner += `${label}<input ${typeAttr} name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}">`;
+      }
+    }
+    paramsHTML = `
+      <details class="params">
+        <summary>Parameters</summary>
+        <div class="param-wrap">${inner}</div>
+      </details>`;
+  }
+
+  card.innerHTML = `
+    <div class="card-head"><h3>${esc(u.label)}</h3></div>
+    <div class="reqs">requires: ${req}</div>
+    ${paramsHTML}
+    <div class="actions">
+      <button class="run">Run</button>
+      <label class="row"><input type="checkbox" class="pipe-add" data-unit-id="${esc(u.id)}"> Add to pipeline</label>
+    </div>`;
+
+  card.querySelector('.run').addEventListener('click', ()=>runUnit(card,u.id));
+  const chk = card.querySelector('.pipe-add');
+  chk.addEventListener('change', () => {
+    const unitId = chk.dataset.unitId || card.dataset.unit;
+    const meta = UNITS_META.find(m => m.id === unitId) || {};
+    const label = meta.label || unitId;
+
+    if (chk.checked) {
+      PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
+      PIPELINE.push({unit: unitId, label, card});
+    } else {
+      PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
+    }
+    drawFlow();
+  });
+
+  // searchable haystack
+  card.dataset.haystack = [u.id, u.label, ...(u.requires||[]), unitCategory(u.id)].join(' ').toLowerCase();
+  return card;
+}
+
 async function renderUnits(){
-  // Ask the backend for bulk-only units if it supports group filtering.
-  // If it doesn't, we still filter on the client.
   let all = [];
   try {
     const res = await fetch(`/session/${SID}/units?group=bulk`);
     all = await res.json();
   } catch (e) {
-    // Fallback to unfiltered endpoint, will filter below
     try {
       const res2 = await fetch(`/session/${SID}/units`);
       all = await res2.json();
     } catch (e2) { all = []; }
   }
 
-  // Client-side filter (defensive) to make sure only BULK shows up
   UNITS_META = (all || []).filter(u => {
     const id     = (u.id || '').toLowerCase();
     const label  = (u.label || '').toLowerCase();
@@ -134,59 +212,65 @@ async function renderUnits(){
     return true;                                 // treat everything else as bulk
   });
 
-  const wrap = $('#units'); wrap.innerHTML = '';
+  const byCat = {};
   UNITS_META.forEach(u => {
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.dataset.unit = u.id;
-    const req = (u.requires||[]).map(x=>`<span class="chip">${x}</span>`).join(' ') || '<span class="muted">none</span>';
-    let paramsHTML = '';
-    for (const [k,v] of Object.entries(u.params_schema||{})) {
-      const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
-      const label = `<label>${esc(k)}${help}</label>`;
-      if (v.type === 'select') {
-        const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
-        paramsHTML += `${label}<select name="${esc(k)}">${opts}</select>`;
-      } else if (v.type === 'file') {
-        paramsHTML += `${label}<input name="${esc(k)}" placeholder="${esc(v.accept||'')}" />` +
-                      `<div class="muted">Upload in section 1 → aux; I'll fill this automatically.</div>`;
-      } else {
-        const val = v.default ?? ''; const ph = v.placeholder ?? '';
-        paramsHTML += `${label}<input name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}">`;
-      }
-    }
-
-    card.innerHTML = `
-      <h3>${esc(u.label)}</h3>
-      <div class="muted">requires: ${req}</div>
-      <div class="mt8">${paramsHTML}</div>
-      <div class="row mt8">
-        <button class="run">Run</button>
-        <label class="row"><input type="checkbox" class="pipe-add" data-unit-id="${esc(u.id)}"> Add to pipeline</label>
-      </div>`;
-
-    card.querySelector('.run').addEventListener('click', ()=>runUnit(card,u.id));
-    const chk = card.querySelector('.pipe-add');
-    chk.addEventListener('change', () => {
-      const unitId = chk.dataset.unitId || card.dataset.unit;
-      const meta = UNITS_META.find(m => m.id === unitId) || {};
-      const label = meta.label || unitId;
-
-      if (chk.checked) {
-        // keep click order
-        PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
-        PIPELINE.push({unit: unitId, label, card});
-      } else {
-        PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
-      }
-      drawFlow();
-    });
-
-    wrap.appendChild(card);
+    const cat = unitCategory(u.id);
+    if(!byCat[cat]) byCat[cat] = [];
+    byCat[cat].push(makeUnitCard(u));
   });
+
+  const mount = $('#unit-groups');
+  if (!mount){ console.warn('unit-groups container not found'); return; }
+  mount.innerHTML = '';
+
+  Object.keys(CATEGORIES).concat(Object.keys(byCat).filter(c => !(c in CATEGORIES))).forEach(cat => {
+    if(!byCat[cat] || byCat[cat].length === 0) return;
+    const det = document.createElement('details');
+    det.className = 'group';
+    det.open = (cat === 'Filtering');
+
+    const sum = document.createElement('summary');
+    sum.innerHTML = `<span class="group-title">${esc(cat)}</span><span class="group-count">${byCat[cat].length}</span>`;
+    const body = document.createElement('div'); body.className = 'group-body';
+    byCat[cat].forEach(card => body.appendChild(card));
+
+    det.appendChild(sum); det.appendChild(body);
+    mount.appendChild(det);
+  });
+
+  // Search & bulk expand/collapse
+  const q = $('#unit-search');
+  if (q && !q.dataset.wired){
+    q.dataset.wired = '1';
+    q.addEventListener('input', () => {
+      const needle = q.value.trim().toLowerCase();
+      const groups = mount.querySelectorAll('details.group');
+      groups.forEach(g => {
+        const cards = g.querySelectorAll('.card');
+        let visible = 0;
+        cards.forEach(c => {
+          const hit = !needle || c.dataset.haystack.includes(needle);
+          c.style.display = hit ? '' : 'none';
+          if(hit) visible++;
+        });
+        g.style.display = visible ? '' : 'none';
+        if(needle && visible) g.open = true;
+        const countEl = g.querySelector('.group-count'); if(countEl) countEl.textContent = String(visible);
+      });
+    });
+  }
+  const expandBtn = $('#expand-all'); const collapseBtn = $('#collapse-all');
+  if(expandBtn && !expandBtn.dataset.wired){
+    expandBtn.dataset.wired = '1';
+    expandBtn.addEventListener('click', ()=>mount.querySelectorAll('details.group').forEach(d=>d.open=true));
+  }
+  if(collapseBtn && !collapseBtn.dataset.wired){
+    collapseBtn.dataset.wired = '1';
+    collapseBtn.addEventListener('click', ()=>mount.querySelectorAll('details.group').forEach(d=>d.open=false));
+  }
 }
 
-// ===== Validation =====
+/* ===== Validation ===== */
 function validateMaskPrimers(step){
   const card = step.card;
   const variant = (card.querySelector('[name="variant"]')?.value || 'align').toLowerCase();
@@ -239,10 +323,9 @@ function validatePipeline(){
   pipeMsg(okAll ? 'Validation passed' : 'Validation found issues', okAll ? 'ok' : 'warn');
 }
 
-// ===== Run Pipeline =====
+/* ===== Run Pipeline ===== */
 async function runPipeline(){
   const steps = selectedSteps();
-  // Filter out any single-cell units
   const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
   if(bulkSteps.length === 0){ pipeMsg('No bulk steps selected','warn'); return; }
   if(bulkSteps.length !== steps.length){
@@ -261,17 +344,16 @@ async function runPipeline(){
   setRunStatus('Finished ✅'); pipeMsg('Pipeline finished','ok');
 }
 
-// ===== Wire up =====
+/* ===== Wire up ===== */
 document.addEventListener('DOMContentLoaded', () => {
-  $('#start').addEventListener('click', startSession);
-  $('#upload').addEventListener('click', uploadReads);
-  $('#upload-aux').addEventListener('click', uploadAux);
-  $('#pipe-validate').addEventListener('click', validatePipeline);
-  $('#pipe-run').addEventListener('click', runPipeline);
-  $('#pipe-clear').addEventListener('click', ()=>{
+  startSession();
+  $('#upload')?.addEventListener('click', uploadReads);
+  $('#upload-aux')?.addEventListener('click', uploadAux);
+  $('#pipe-validate')?.addEventListener('click', validatePipeline);
+  $('#pipe-run')?.addEventListener('click', runPipeline);
+  $('#pipe-clear')?.addEventListener('click', ()=>{
     $$('.pipe-add').forEach(c=>c.checked=false);
     PIPELINE = [];
     drawFlow(); $('#validation').textContent='—'; pipeMsg('Pipeline cleared');
   });
-  startSession();
 });
