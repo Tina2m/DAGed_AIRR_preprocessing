@@ -121,7 +121,57 @@ function buildUnitCard(u){
   card.querySelector('.run').addEventListener('click', ()=>runSingle(card, u.id, u.label));
   card.querySelector('.addflow').addEventListener('click', ()=>addToFlow(card, u.id, u.label));
 
+  if(u.id === 'sc_remove_multi_heavy'){
+    decorateMultiHeavyCard(card);
+  }
+
   return card;
+}
+
+function decorateMultiHeavyCard(card){
+  const select = card.querySelector('select[name="heavy_value"]');
+  if(!select) return;
+  const groupName = `mh-mode-${Math.random().toString(36).slice(2,8)}`;
+  const modes = {
+    bcr: {
+      label: 'BCR',
+      values: ['IGH','IGK','IGL','IGH,IGK','IGH,IGL'],
+      title: 'SC: Remove cells with multiple IgH',
+    },
+    tcr: {
+      label: 'TCR',
+      values: ['TRA','TRB','TRA,TRB'],
+      title: 'SC: Remove cells with multiple TRA/TRB',
+    },
+  };
+
+  const block = document.createElement('div');
+  block.className = 'mh-mode-block';
+  block.innerHTML = `
+    <label class="muted">mode — toggle BCR/TCR</label>
+    <div class="mh-toggle">
+      <label class="pill-input"><input type="radio" name="${groupName}" value="bcr" checked> BCR</label>
+      <label class="pill-input"><input type="radio" name="${groupName}" value="tcr"> TCR</label>
+    </div>
+  `;
+  select.insertAdjacentElement('beforebegin', block);
+
+  const titleEl = card.querySelector('.uc-title');
+  function setOptions(mode){
+    select.innerHTML = modes[mode].values.map(v => `<option value="${v}">${v}</option>`).join('');
+    select.value = modes[mode].values[0];
+    if(titleEl) titleEl.textContent = modes[mode].title;
+  }
+
+  block.querySelectorAll(`input[name="${groupName}"]`).forEach(radio => {
+    radio.addEventListener('change', () => {
+      if(radio.checked){
+        setOptions(radio.value);
+      }
+    });
+  });
+
+  setOptions('bcr');
 }
 
 function collectParams(card){

@@ -30,8 +30,8 @@
     a:hover{text-decoration:underline}
     code{background:#f3f4f6;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
     .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1400px;margin:0 auto}
-    .left{flex:1 1 auto;min-width:660px}
-    .right{width:360px;flex:0 0 360px;position:sticky;top:12px;align-self:flex-start}
+    .left{flex:0 0 33%;max-width:33%;min-width:0}
+    .right{flex:0 0 67%;max-width:67%;position:sticky;top:12px;align-self:flex-start}
     .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
     h1{margin:0 0 12px 0;font-size:22px;letter-spacing:.2px}
     h2{margin:14px 0 10px 0;font-size:18px}
@@ -64,10 +64,14 @@
     .progress{height:10px;background:#eef2ff;border-radius:99px;overflow:hidden;margin-top:8px;border:1px solid var(--border)}
     .bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
     pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:10px;max-height:260px;overflow:auto}
-    @media (max-width:1100px){ .wrap{flex-direction:column} .left{min-width:auto} .right{width:auto;position:relative;top:0} }
+    @media (max-width:1100px){
+      .wrap{flex-direction:column}
+      .left,.right{flex:1 1 auto;max-width:100%}
+      .right{position:relative;top:0}
+    }
   </style>
 </head>
-<body>
+<body class="mode-single">
   <script>
     // tell nav to highlight this page
     document.documentElement.setAttribute('data-active', 'bulk');
@@ -79,24 +83,23 @@
         <h1>ImmunoStream – Bulk amplicon <span class="chip">session:<span id="sid" style="opacity:.7">—</span></span></h1>
 
         <h2>1) Upload</h2>
-        <div class="grid">
+        <div class="grid upload-grid">
           <div class="card">
             <h3>Upload reads</h3>
             <label>R1 FASTQ(.gz)</label><input type="file" id="r1f" />
             <label>R2 FASTQ(.gz) (optional)</label><input type="file" id="r2f" />
             <div class="mt8"><button id="upload">Upload</button></div>
           </div>
-
-          <div class="card">
-            <h3>Upload aux (primers/reference)</h3>
-            <label>Choose file</label><input type="file" id="auxf" />
-            <label>Store as (optional)</label><input id="auxname" placeholder="e.g. V.fasta or C.fasta" />
-            <div class="mt8 row">
-              <button id="upload-aux">Upload aux</button>
-              <span id="aux-out" class="muted"></span>
-            </div>
-            <div class="muted mt8">Primer FASTA uploads are auto-recognized and wired into MaskPrimers (V/C).</div>
+        </div>
+        <div class="card mt8">
+          <h3>Upload aux (primers/reference)</h3>
+          <label>Choose file</label><input type="file" id="auxf" />
+          <label>Store as (optional)</label><input id="auxname" placeholder="e.g. V.fasta or C.fasta" />
+          <div class="mt8 row">
+            <button id="upload-aux">Upload aux</button>
+            <span id="aux-out" class="muted"></span>
           </div>
+          <div class="muted mt8">Primer FASTA uploads are auto-recognized and wired into MaskPrimers (V/C).</div>
         </div>
 
         <!-- ===== Units toolbar & grouped container ===== -->
@@ -110,7 +113,16 @@
         </div>
         <div id="unit-groups" class="unit-groups"></div>
 
-        <h2>3) Pipeline</h2>
+        <div class="dag-only palette-section">
+          <h2>Paired-end node palette</h2>
+          <p class="muted">Add units to R1/R2 branches before wiring them on the builder panel.</p>
+          <div class="panel palette-panel">
+            <div id="bulk-palette" class="palette-list"></div>
+          </div>
+        </div>
+
+        <h2>3) Run pipeline</h2>
+        <p class="muted">Use the panel on the right to choose single-end (linear) or paired-end (DAG) layout, then run from here.</p>
         <div class="row mb8">
           <button id="pipe-validate" class="secondary">Validate</button>
           <button id="pipe-run">Run pipeline</button>
@@ -132,10 +144,39 @@
     <aside class="right">
       <div class="panel">
         <h2>Pipeline overview</h2>
-        <div class="muted">Checked units appear here in click order.</div>
+        <div class="muted">Configure structure and monitor progress.</div>
 
-        <h3 class="mt8">Flow</h3>
-        <div id="flow" class="flow"></div>
+        <div class="mode-toggle" role="group" aria-label="Workflow mode">
+          <label class="pill-input">
+            <input type="radio" name="bulk-mode" value="single" checked>
+            Single-end
+          </label>
+          <label class="pill-input">
+            <input type="radio" name="bulk-mode" value="paired">
+            Paired-end
+          </label>
+          <span id="mode-note" class="muted">Single-end: build a linear flow with Add to pipeline.</span>
+        </div>
+
+        <div class="dag-only">
+          <h3 class="mt8">Paired-end builder</h3>
+          <p class="muted">Arrange nodes on each branch, then connect outputs to downstream steps.</p>
+          <section class="panel dag-shell">
+            <div class="graph-panel">
+              <div class="graph-columns">
+                <div id="graph-r1" class="graph-col"></div>
+                <div id="graph-r2" class="graph-col"></div>
+                <div id="graph-merge" class="graph-col"></div>
+              </div>
+              <div id="graph-edges" class="edges-panel"></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="linear-only">
+          <h3 class="mt8">Flow</h3>
+          <div id="flow" class="flow"></div>
+        </div>
 
         <h3 class="mt8">Validation</h3>
         <div id="validation" class="muted">—</div>
@@ -147,6 +188,7 @@
     </aside>
   </div>
 
-  <script src="assets/js/script.js?v=20250310"></script>
+  <script defer src="assets/js/script.js?v=20250310"></script>
+  <script type="module" src="assets/js/bulk.js?v=20250322"></script>
 </body>
 </html>

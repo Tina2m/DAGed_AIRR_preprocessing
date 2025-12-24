@@ -1,313 +1,598 @@
-// ui/assets/js/bulk.js  — Bulk page logic (ES module)
+// Bulk DAG builder for paired-end workflows with interactive editing
+const DAG_STATE = {
+  nodes: {},
+  edges: [],
+};
+const CHANNEL_ARTIFACTS = {};
+const STATUS_LABELS = {
+  idle: 'Idle',
+  running: 'Running',
+  done: 'Done',
+  error: 'Error',
+  blocked: 'Blocked',
+};
 
-let SID = null;
-let UNITS_META = [];
-let PIPELINE = []; // [{unit, label, card}]
+const UNIT_META = {
+  filterseq: {
+    label: 'FilterSeq quality',
+    consumes: ['R1'],
+    produces: ['R1'],
+    branches: ['R1', 'R2'],
+    dynamicBranch: true,
+    params: [
+      { key: 'min_quality', label: 'Quality >=', type: 'number', default: 20, min: 0, max: 50, step: 1 },
+    ],
+  },
+  maskprimers: {
+    label: 'MaskPrimers score',
+    consumes: ['R1'],
+    produces: ['R1'],
+    branches: ['R1', 'R2'],
+    dynamicBranch: true,
+    params: [
+      { key: 'max_error', label: 'Max error', type: 'number', default: 0.3, min: 0, max: 1, step: 0.05 },
+    ],
+  },
+  pairseq: {
+    label: 'PairSeq',
+    consumes: ['R1', 'R2'],
+    produces: ['MERGED'],
+    branches: ['MERGED'],
+    params: [
+      { key: 'coordinate', label: 'Coordinate mode', type: 'select', options: ['sra', 'presto'], default: 'sra' },
+    ],
+  },
+  buildcons: {
+    label: 'BuildConsensus',
+    consumes: ['R1'],
+    produces: ['R1'],
+    branches: ['R1', 'R2'],
+    dynamicBranch: true,
+    params: [
+      { key: 'min_reads', label: 'Min reads', type: 'number', default: 2, min: 1, step: 1 },
+    ],
+  },
+  assemble_pairs: {
+    label: 'AssemblePairs sequential',
+    consumes: ['MERGED'],
+    produces: ['MERGED'],
+    branches: ['MERGED'],
+    params: [
+      { key: 'aligner', label: 'Aligner', type: 'select', options: ['blastn', 'vsearch'], default: 'blastn' },
+    ],
+  },
+};
 
-const $  = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
-const esc = (s) => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const branchLabels = {
+  R1: 'Read 1 branch',
+  R2: 'Read 2 branch',
+  MERGED: 'Post-merge',
+};
 
-// ---- small UI helpers ----
-function pipeMsg(text, cls = 'muted'){ const p = $('#pipe-msg'); p.className = cls; p.textContent = text; }
-function setRunStatus(text){ $('#run-status').innerHTML = text; }
-function setProgress(i, n){ const pct = n ? Math.round((i/n)*100) : 0; $('#run-bar').style.width = pct + '%'; }
+let connectSource = null;
 
-// Maintain click order but drop unchecked items
-function selectedSteps(){
-  PIPELINE = PIPELINE.filter(s => s.card && s.card.querySelector('.pipe-add')?.checked);
-  return [...PIPELINE];
+function randomId(){
+  return `node_${Math.random().toString(36).slice(2,8)}`;
 }
 
-function drawFlow(){
-  const steps = selectedSteps();
-  const flow = $('#flow'); flow.innerHTML = '';
-  if(steps.length === 0){
-    flow.innerHTML = '<span class="muted">no steps selected</span>';
-    return;
-  }
-  steps.forEach((s,i) => {
-    const n = document.createElement('div'); n.className = 'node'; n.textContent = s.label;
-    flow.appendChild(n);
-    if(i < steps.length-1){
-      const a = document.createElement('div'); a.className = 'arrow'; a.textContent = '→';
-      flow.appendChild(a);
-    }
-  });
-}
-
-// ---- session ----
-async function startSession(){
-  try{
-    const r = await fetch('/session/start',{method:'POST'});
-    const j = await r.json();
-    SID = j.session_id;
-  }catch(e){
-    console.error('Failed to start session', e);
-    alert('Could not start session. See console for details.');
-    return;
-  }
-
-  PIPELINE = [];
-  await renderUnits();
-  await refreshState();
-  drawFlow();
-  $('#validation').textContent = '—';
-  setRunStatus('—'); setProgress(0,1);
-}
-
-// ---- uploads ----
-async function uploadReads(){
-  const r1 = $('#r1f').files[0]; if(!r1){ alert('Choose R1'); return; }
-  const fd = new FormData(); fd.append('r1', r1);
-  const r2 = $('#r2f').files[0]; if(r2) fd.append('r2', r2);
-  const r = await fetch(`/session/${SID}/upload`, {method:'POST', body:fd});
-  if(!r.ok){ alert('Upload failed'); return; }
-  await refreshState();
-}
-
-async function uploadAux(){
-  const f = $('#auxf').files[0]; if(!f){ alert('Choose file'); return; }
-  const fd = new FormData(); fd.append('file', f);
-  const name = $('#auxname').value.trim(); if(name) fd.append('name', name);
-  const r = await fetch(`/session/${SID}/upload-aux`, {method:'POST', body:fd});
-  const j = await r.json();
-  $('#aux-out').textContent = `Stored as: ${j.stored_as}` + (j.role && j.role!=='other' ? ` (auto as ${j.role})` : '');
-
-  // auto-fill MaskPrimers fields for convenience
-  if(j.role === 'v_primers' || j.role === 'other'){
-    $$('.card[data-unit="mask_primers"] input[name="v_primers_fname"]').forEach(el => { if(!el.value) el.value = j.stored_as; });
-  }
-  if(j.role === 'c_primers'){
-    $$('.card[data-unit="mask_primers"] input[name="c_primers_fname"]').forEach(el => { if(!el.value) el.value = j.stored_as; });
-  }
-}
-
-// ---- state / artifacts ----
-async function refreshState(){
-  const r = await fetch(`/session/${SID}/state`);
-  const s = await r.json();
-  const chips = Object.entries(s.current||{})
-    .map(([k,v]) => `<span class="chip">${esc(k)}: ${esc(v)}</span>`).join(' ');
-  $('#state').innerHTML = chips || '<span class="muted">no state</span>';
-
-  const arts = Object.values(s.artifacts||{})
-    .map(a => `<div>${esc(a.name)} — <a href="/session/${SID}/download/${encodeURIComponent(a.name)}">download</a></div>`)
-    .join('');
-  $('#arts').innerHTML = arts || '<span class="muted">none</span>';
-
-  // Expose to window (if you need debugging in console)
-  window.__SESSION_STATE__ = s;
-}
-
-// ---- units rendering ----
-function collectParams(card){
+function defaultParams(meta){
   const params = {};
-  card.querySelectorAll('input,select,textarea').forEach(el => {
-    if(!el.name) return;
-    if(el.type === 'file') return;
-    if(el.classList.contains('pipe-add')) return;
-    params[el.name] = (el.type === 'checkbox') ? (el.checked ? 'true' : 'false') : el.value;
+  (meta.params || []).forEach(p => {
+    params[p.key] = p.default ?? '';
   });
   return params;
 }
 
-async function runUnit(card, unitId){
-  const params = collectParams(card);
-  const r = await fetch(`/session/${SID}/run`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ unit_id: unitId, params })
+function ensureNodeDefaults(node){
+  const meta = UNIT_META[node.unitId];
+  if(!meta) return;
+  if(!node.params) node.params = defaultParams(meta);
+  else (meta.params || []).forEach(p => {
+    if(node.params[p.key] === undefined){
+      node.params[p.key] = p.default ?? '';
+    }
   });
-  const j = await r.json();
-  if(!r.ok){
-    alert(`Error: ${(j.detail && (j.detail.error||j.detail)) || r.statusText}`);
-    $('#log').textContent = (j.detail && j.detail.log_tail) ? j.detail.log_tail : '';
+  if(meta.dynamicBranch){
+    if(!meta.branches.includes(node.branch)){
+      node.branch = meta.branches[0];
+    }
+    const branchChannel = node.branch === 'R2' ? 'R2' : 'R1';
+    node.consumes = [branchChannel];
+    node.produces = [branchChannel];
+  } else {
+    if(!node.consumes || !node.consumes.length){
+      node.consumes = meta.consumes.slice();
+    }
+    if(!node.produces || !node.produces.length){
+      node.produces = meta.produces.slice();
+    }
+  }
+}
+
+function cloneNode(node){
+  return {
+    id: node.id,
+    unitId: node.unitId,
+    label: node.label,
+    branch: node.branch,
+    consumes: (node.consumes || []).slice(),
+    produces: (node.produces || []).slice(),
+    params: {...(node.params || {})},
+    status: node.status || 'idle',
+  };
+}
+
+function addNode(unitId, branch){
+  const meta = UNIT_META[unitId];
+  if(!meta || !meta.branches.includes(branch)) return;
+  const id = randomId();
+  DAG_STATE.nodes[id] = {
+    id,
+    unitId,
+    label: meta.label,
+    branch,
+    consumes: meta.consumes.slice(),
+    produces: meta.produces.slice(),
+    params: defaultParams(meta),
+    incoming: [],
+    status: 'idle',
+  };
+  renderGraph();
+}
+
+function removeNode(nodeId){
+  delete DAG_STATE.nodes[nodeId];
+  DAG_STATE.edges = DAG_STATE.edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId);
+  Object.values(DAG_STATE.nodes).forEach(node => {
+    node.incoming = node.incoming.filter(entry => entry.node !== nodeId);
+  });
+  Object.keys(CHANNEL_ARTIFACTS).forEach(channel => {
+    if(CHANNEL_ARTIFACTS[channel]?.nodeId === nodeId){
+      delete CHANNEL_ARTIFACTS[channel];
+    }
+  });
+  if(connectSource === nodeId){
+    connectSource = null;
+  }
+  renderGraph();
+}
+
+function removeEdge(fromId, toId){
+  DAG_STATE.edges = DAG_STATE.edges.filter(edge => !(edge.from === fromId && edge.to === toId));
+  const target = DAG_STATE.nodes[toId];
+  if(target){
+    target.incoming = target.incoming.filter(entry => entry.node !== fromId);
+  }
+  renderGraph();
+}
+
+function connectNodes(fromId, toId){
+  if(fromId === toId) return false;
+  const source = DAG_STATE.nodes[fromId];
+  const target = DAG_STATE.nodes[toId];
+  if(!source || !target) return false;
+  if(DAG_STATE.edges.some(edge => edge.from === fromId && edge.to === toId)) return false;
+
+  const produced = source.produces || [];
+  const targetMeta = UNIT_META[target.unitId] || {};
+  const consumes = (target.consumes && target.consumes.length) ? target.consumes : (targetMeta.consumes || []);
+  if(!consumes.length){
+    alert(`${target.label} does not accept any inputs.`);
     return false;
   }
-  await refreshState();
-  const stepIdx = j.step.step_index;
-  const lr = await fetch(`/session/${SID}/log/${stepIdx}`);
-  $('#log').textContent = await lr.text();
+  const validChannels = produced.filter(ch => consumes.includes(ch));
+  if(!validChannels.length){
+    alert(`Cannot connect ${source.label} (${produced.join(', ') || 'no outputs'}) to ${target.label}. ${target.label} expects ${consumes.join(', ') || 'no inputs'}.`);
+    return false;
+  }
+  DAG_STATE.edges.push({from: fromId, to: toId, channels: validChannels});
+
+  const incomingMap = new Map(target.incoming.map(entry => [entry.node, entry]));
+  incomingMap.set(fromId, {node: fromId, label: source.label, channels: validChannels});
+  target.incoming = Array.from(incomingMap.values());
   return true;
 }
 
-async function renderUnits(){
-  let all = [];
-  try {
-    // preferred path: backend filters by group=bulk
-    const res = await fetch(`/session/${SID}/units?group=bulk`);
-    all = await res.json();
-  } catch {
-    // fallback: fetch everything, then filter on the client
-    try {
-      const res2 = await fetch(`/session/${SID}/units`);
-      all = await res2.json();
-    } catch { all = []; }
-  }
-
-  // Defensive client-side filter to guarantee only BULK shows
-  UNITS_META = (all || []).filter(u => {
-    const id    = (u.id || '').toLowerCase();
-    const label = (u.label || '').toLowerCase();
-    const group = (u.group || '').toLowerCase();
-    if (group) return group === 'bulk';
-    if (id.startsWith('sc_')) return false;
-    if (label.startsWith('sc:')) return false;
-    return true;
-  });
-
-  const wrap = $('#units'); wrap.innerHTML = '';
-
-  UNITS_META.forEach(u => {
+function renderPalette(){
+  const palette = document.querySelector('#bulk-palette');
+  if(!palette) return;
+  palette.innerHTML = '';
+  Object.entries(UNIT_META).forEach(([unitId, meta]) => {
     const card = document.createElement('div');
-    card.className = 'card';
-    card.dataset.unit = u.id;
+    card.className = 'bulk-card';
+    const title = document.createElement('h4');
+    title.textContent = meta.label;
+    card.appendChild(title);
 
-    const req = (u.requires||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ') || '<span class="muted">none</span>';
+    const consumes = document.createElement('div');
+    consumes.className = 'muted';
+    consumes.textContent = `Consumes: ${meta.consumes.join(', ') || '-'}`;
+    card.appendChild(consumes);
 
-    // params renderer
-    let paramsHTML = '';
-    for (const [k,v] of Object.entries(u.params_schema || {})) {
-      const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
-      const label = `<label>${esc(k)}${help}</label>`;
-      if (v.type === 'select') {
-        const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
-        paramsHTML += `${label}<select name="${esc(k)}">${opts}</select>`;
-      } else if (v.type === 'file') {
-        paramsHTML += `${label}<input name="${esc(k)}" placeholder="${esc(v.accept||'')}" />` +
-                      `<div class="muted">Upload in section 1 → aux; I'll fill this automatically.</div>`;
-      } else {
-        const val = v.default ?? ''; const ph = v.placeholder ?? '';
-        paramsHTML += `${label}<input name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}">`;
-      }
-    }
+    const produces = document.createElement('div');
+    produces.className = 'muted';
+    produces.textContent = `Produces: ${meta.produces.join(', ') || '-'}`;
+    card.appendChild(produces);
 
-    card.innerHTML = `
-      <h3>${esc(u.label)}</h3>
-      <div class="muted">requires: ${req}</div>
-      <div class="mt8">${paramsHTML}</div>
-      <div class="row mt8">
-        <button class="run">Run</button>
-        <label class="row">
-          <input type="checkbox" class="pipe-add" data-unit-id="${esc(u.id)}"> Add to pipeline
-        </label>
-      </div>
-    `;
+    const branchInfo = document.createElement('div');
+    branchInfo.className = 'muted';
+    branchInfo.textContent = `Branches: ${meta.branches.join(', ')}`;
+    card.appendChild(branchInfo);
 
-    // Wire actions
-    card.querySelector('.run').addEventListener('click', ()=>runUnit(card, u.id));
-    const chk = card.querySelector('.pipe-add');
-    chk.addEventListener('change', () => {
-      const unitId = chk.dataset.unitId || card.dataset.unit;
-      const meta = UNITS_META.find(m => m.id === unitId) || {};
-      const label = meta.label || unitId;
-
-      if (chk.checked) {
-        PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
-        PIPELINE.push({unit: unitId, label, card});
-      } else {
-        PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
-      }
-      drawFlow();
+    const buttonsRow = document.createElement('div');
+    buttonsRow.className = 'branch-buttons';
+    meta.branches.forEach(branch => {
+      const btn = document.createElement('button');
+      btn.textContent = `Add to ${branch}`;
+      btn.addEventListener('click', () => addNode(unitId, branch));
+      buttonsRow.appendChild(btn);
     });
-
-    wrap.appendChild(card);
+    card.appendChild(buttonsRow);
+    palette.appendChild(card);
   });
 }
 
-// ---- validation (bulk-only) ----
-function validateMaskPrimers(step){
-  const card = step.card;
-  const variant = (card.querySelector('[name="variant"]')?.value || 'align').toLowerCase();
-  if(variant === 'align' || variant === 'score'){
-    const vbox = card.querySelector('input[name="v_primers_fname"]');
-    const vFilled = vbox && vbox.value.trim().length > 0;
-    const aux = (window.__SESSION_STATE__ && window.__SESSION_STATE__.aux) || {};
-    const ok = vFilled || !!aux?.v_primers;
-    return ok ? {ok:true,msg:'MaskPrimers primers: OK'} : {ok:false,msg:'MaskPrimers needs V primers (upload aux or fill filename).'};
+function buildParamField(node, def){
+  const wrap = document.createElement('div');
+  wrap.className = 'param-field';
+  const label = document.createElement('label');
+  label.textContent = def.label;
+  wrap.appendChild(label);
+
+  let input;
+  if(def.type === 'select'){
+    input = document.createElement('select');
+    (def.options || []).forEach(opt => {
+      const option = document.createElement('option');
+      if(typeof opt === 'string'){
+        option.value = opt;
+        option.textContent = opt;
+      } else {
+        option.value = opt.value;
+        option.textContent = opt.label || opt.value;
+      }
+      input.appendChild(option);
+    });
+  } else {
+    input = document.createElement('input');
+    input.type = def.type === 'number' ? 'number' : 'text';
+    if(def.step !== undefined) input.step = def.step;
+    if(def.min !== undefined) input.min = def.min;
+    if(def.max !== undefined) input.max = def.max;
+    if(def.placeholder) input.placeholder = def.placeholder;
   }
-  return {ok:true,msg:'MaskPrimers extract: OK'};
+  input.className = 'param-input';
+  input.dataset.param = def.key;
+  const currentVal = node.params?.[def.key];
+  input.value = currentVal !== undefined ? currentVal : (def.default ?? '');
+  const updateValue = () => { node.params[def.key] = input.value; };
+  input.addEventListener(def.type === 'select' ? 'change' : 'input', updateValue);
+  wrap.appendChild(input);
+
+  if(def.help){
+    const hint = document.createElement('small');
+    hint.textContent = def.help;
+    wrap.appendChild(hint);
+  }
+  return wrap;
 }
-function validateAssemble(step){
-  const s = window.__SESSION_STATE__ || {};
-  const needBoth = !!(step.unit.startsWith('assemble_'));
-  if(needBoth){
-    const haveR1 = !!(s.current && s.current.R1);
-    const haveR2 = !!(s.current && s.current.R2);
-    if(!(haveR1 && haveR2)){
-      return {ok:false,msg:'AssemblePairs likely needs both R1 and R2 present (or run PairSeq).'};
+
+function buildParamSection(node, meta){
+  if(!meta.params || !meta.params.length) return null;
+  const details = document.createElement('details');
+  details.className = 'node-params';
+  details.open = meta.params.length <= 2;
+  const summary = document.createElement('summary');
+  summary.textContent = 'Parameters';
+  details.appendChild(summary);
+  const body = document.createElement('div');
+  body.className = 'params-body';
+  meta.params.forEach(def => body.appendChild(buildParamField(node, def)));
+  details.appendChild(body);
+  return details;
+}
+
+function renderGraph(){
+  const cols = {
+    R1: document.querySelector('#graph-r1'),
+    R2: document.querySelector('#graph-r2'),
+    MERGED: document.querySelector('#graph-merge'),
+  };
+  Object.entries(cols).forEach(([branch, col]) => {
+    if(col){
+      col.innerHTML = '';
+      const heading = document.createElement('h3');
+      heading.textContent = branchLabels[branch];
+      col.appendChild(heading);
     }
-  }
-  return {ok:true,msg:'AssemblePairs: basic check passed'};
-}
-function validateConsensus(){ return {ok:true,msg:'BuildConsensus: ensure BARCODE exists (MaskPrimers extract tag).'}; }
+  });
 
-function validatePipeline(){
-  const steps = selectedSteps();
-  drawFlow();
-  if(steps.length===0){ $('#validation').innerHTML = '<span class="warn">No steps selected.</span>'; return; }
-
-  const msgs = [];
-  let okAll = true;
-
-  // keep only bulk units (defense)
-  const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
-  if(bulkSteps.length !== steps.length){
-    okAll = false;
-    msgs.push(`<div class="err">• Single-cell units detected and removed from pipeline</div>`);
-  }
-
-  for(const st of bulkSteps){
-    let res = {ok:true,msg:'OK'};
-    if(st.unit === 'mask_primers') res = validateMaskPrimers(st);
-    else if(st.unit.startsWith('assemble_')) res = validateAssemble(st);
-    else if(st.unit === 'build_consensus') res = validateConsensus(st);
-    okAll = okAll && res.ok;
-    msgs.push(`<div class="${res.ok?'ok':'err'}">• ${esc(st.label)}: ${esc(res.msg)}</div>`);
-  }
-
-  $('#validation').innerHTML = msgs.join('') || '—';
-  pipeMsg(okAll ? 'Validation passed' : 'Validation found issues', okAll ? 'ok' : 'warn');
-}
-
-// ---- run pipeline ----
-async function runPipeline(){
-  const steps = selectedSteps();
-  const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
-  if(bulkSteps.length === 0){ pipeMsg('No bulk steps selected','warn'); return; }
-  if(bulkSteps.length !== steps.length){
-    pipeMsg('Single-cell units removed from pipeline','warn');
-  }
-  validatePipeline();
-  setRunStatus('Starting…'); setProgress(0, bulkSteps.length);
-
-  for(let i=0;i<bulkSteps.length;i++){
-    const s = bulkSteps[i];
-    setRunStatus(`Running <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`);
-    const ok = await runUnit(s.card, s.unit);
-    setProgress(i+1, bulkSteps.length);
-    if(!ok){
-      setRunStatus(`Failed at <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`);
-      pipeMsg('Pipeline failed','err');
-      return;
+  Object.values(DAG_STATE.nodes).forEach(node => {
+    ensureNodeDefaults(node);
+    const meta = UNIT_META[node.unitId] || {};
+    const card = document.createElement('div');
+    card.className = 'graph-node';
+    const mergeInputs = (meta.consumes || []).filter(ch => ch === 'R1' || ch === 'R2').length > 1 || (meta.consumes || []).includes('MERGED');
+    if(mergeInputs){
+      card.classList.add('merge-node');
     }
-  }
-  setRunStatus('Finished ✅'); pipeMsg('Pipeline finished','ok');
+    if(connectSource === node.id){
+      card.classList.add('connecting');
+    }
+    const status = node.status || 'idle';
+    card.classList.add(`status-${status}`);
+
+    const title = document.createElement('div');
+    title.className = 'node-title';
+    title.textContent = node.label;
+    const idSpan = document.createElement('span');
+    idSpan.className = 'node-id muted';
+    idSpan.textContent = ` (${node.id})`;
+    title.appendChild(idSpan);
+    card.appendChild(title);
+
+    const statusBadge = document.createElement('div');
+    statusBadge.className = `status-badge status-${status}`;
+    statusBadge.textContent = STATUS_LABELS[status] || status;
+    card.appendChild(statusBadge);
+
+    if(meta.branches && meta.branches.length > 1){
+      const branchWrap = document.createElement('div');
+      branchWrap.className = 'node-meta';
+      const branchLabel = document.createElement('span');
+      branchLabel.textContent = 'Branch';
+      const branchSelect = document.createElement('select');
+      branchSelect.className = 'branch-select';
+      meta.branches.forEach(branch => {
+        const option = document.createElement('option');
+        option.value = branch;
+        option.textContent = branch;
+        branchSelect.appendChild(option);
+      });
+      branchSelect.value = node.branch;
+      branchSelect.addEventListener('change', e => {
+        node.branch = e.target.value;
+        renderGraph();
+      });
+      branchWrap.appendChild(branchLabel);
+      branchWrap.appendChild(branchSelect);
+      card.appendChild(branchWrap);
+    }
+
+    const paramsSection = buildParamSection(node, meta);
+    if(paramsSection){
+      card.appendChild(paramsSection);
+    }
+
+    const channels = document.createElement('div');
+    channels.className = 'channels';
+    const inRow = document.createElement('div');
+    inRow.textContent = `In: ${node.consumes.join(', ') || '-'}`;
+    const outRow = document.createElement('div');
+    outRow.textContent = `Out: ${node.produces.join(', ') || '-'}`;
+    const incomingRow = document.createElement('div');
+    incomingRow.className = 'incoming-row';
+    incomingRow.textContent = 'Incoming: ';
+    if(node.incoming.length){
+      node.incoming.forEach(entry => {
+        const badge = document.createElement('span');
+        badge.className = 'channel-badge';
+        badge.textContent = `${entry.label} (${entry.channels.join(', ')})`;
+        incomingRow.appendChild(badge);
+      });
+    } else {
+      const none = document.createElement('span');
+      none.className = 'muted';
+      none.textContent = 'none';
+      incomingRow.appendChild(none);
+    }
+    channels.appendChild(inRow);
+    channels.appendChild(outRow);
+    channels.appendChild(incomingRow);
+    card.appendChild(channels);
+
+    const actions = document.createElement('div');
+    actions.className = 'node-actions';
+    const connectBtn = document.createElement('button');
+    connectBtn.className = 'connect-btn';
+    connectBtn.textContent = connectSource === node.id ? 'Pick target...' : 'Connect';
+    connectBtn.addEventListener('click', () => toggleConnect(node.id));
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-btn';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', () => removeNode(node.id));
+    actions.appendChild(connectBtn);
+    actions.appendChild(removeBtn);
+    card.appendChild(actions);
+
+    const bucket = cols[node.branch] || cols.MERGED;
+    bucket?.appendChild(card);
+  });
+
+  renderEdges();
 }
 
-// ---- init ----
+function toggleConnect(nodeId){
+  if(connectSource === nodeId){
+    connectSource = null;
+    renderGraph();
+    return;
+  }
+  if(!connectSource){
+    connectSource = nodeId;
+    renderGraph();
+    return;
+  }
+  const source = connectSource;
+  const ok = connectNodes(source, nodeId);
+  if(ok){
+    connectSource = null;
+    renderGraph();
+  }
+}
+
+function renderEdges(){
+  const out = document.querySelector('#graph-edges');
+  if(!out) return;
+  out.innerHTML = '';
+
+  const connHeader = document.createElement('h4');
+  connHeader.textContent = 'Connections';
+  out.appendChild(connHeader);
+
+  if(DAG_STATE.edges.length === 0){
+    const none = document.createElement('div');
+    none.className = 'muted';
+    none.textContent = 'No connections yet';
+    out.appendChild(none);
+  } else {
+    DAG_STATE.edges.forEach(edge => {
+      const row = document.createElement('div');
+      row.className = 'edge-row';
+      const left = document.createElement('span');
+      const from = DAG_STATE.nodes[edge.from]?.label || edge.from;
+      const to = DAG_STATE.nodes[edge.to]?.label || edge.to;
+      left.textContent = `${from} -> ${to}`;
+      const right = document.createElement('span');
+      right.className = 'edge-meta';
+      const ch = document.createElement('span');
+      ch.textContent = edge.channels.join(', ');
+      const btn = document.createElement('button');
+      btn.className = 'edge-remove';
+      btn.textContent = 'Remove';
+      btn.addEventListener('click', () => removeEdge(edge.from, edge.to));
+      right.appendChild(ch);
+      right.appendChild(btn);
+      row.appendChild(left);
+      row.appendChild(right);
+      out.appendChild(row);
+    });
+  }
+
+  const artHeader = document.createElement('h4');
+  artHeader.textContent = 'Artifacts by channel';
+  out.appendChild(artHeader);
+
+  const keys = Object.keys(CHANNEL_ARTIFACTS);
+  if(keys.length === 0){
+    const none = document.createElement('div');
+    none.className = 'muted';
+    none.textContent = 'Run nodes to capture channel outputs';
+    out.appendChild(none);
+  } else {
+    keys.forEach(channel => {
+      const info = CHANNEL_ARTIFACTS[channel];
+      const row = document.createElement('div');
+      row.className = 'channel-row';
+      const left = document.createElement('span');
+      left.textContent = channel;
+      const right = document.createElement('span');
+      const value = document.createElement('span');
+      value.textContent = info.value || 'n/a';
+      const label = document.createElement('span');
+      label.className = 'muted';
+      label.textContent = ` (${info.label})`;
+      right.appendChild(value);
+      right.appendChild(label);
+      row.appendChild(left);
+      row.appendChild(right);
+      out.appendChild(row);
+    });
+  }
+}
+
+function topoOrder(){
+  const indegree = {};
+  Object.keys(DAG_STATE.nodes).forEach(id => indegree[id] = 0);
+  DAG_STATE.edges.forEach(({to}) => { if(indegree[to] !== undefined) indegree[to]++; });
+  const queue = Object.keys(indegree).filter(id => indegree[id] === 0);
+  const order = [];
+  while(queue.length){
+    const node = queue.shift();
+    order.push(node);
+    DAG_STATE.edges.forEach(edge => {
+      if(edge.from === node){
+        indegree[edge.to]--;
+        if(indegree[edge.to] === 0) queue.push(edge.to);
+      }
+    });
+  }
+  if(order.length !== Object.keys(DAG_STATE.nodes).length){
+    return null;
+  }
+  return order;
+}
+
+function setNodeStatus(id, status){
+  if(DAG_STATE.nodes[id]){
+    DAG_STATE.nodes[id].status = status;
+    renderGraph();
+  }
+}
+
+function resetStatuses(){
+  Object.values(DAG_STATE.nodes).forEach(node => node.status = 'idle');
+  renderGraph();
+}
+
+function recordChannelArtifacts(nodeId, currentState){
+  const node = DAG_STATE.nodes[nodeId];
+  if(!node || !currentState) return;
+  (node.produces || []).forEach(ch => {
+    if(currentState[ch]){
+      CHANNEL_ARTIFACTS[ch] = { nodeId, label: node.label, value: currentState[ch] };
+    }
+  });
+  renderEdges();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-  // wire buttons
-  $('#upload')?.addEventListener('click', uploadReads);
-  $('#upload-aux')?.addEventListener('click', uploadAux);
-  $('#pipe-validate')?.addEventListener('click', validatePipeline);
-  $('#pipe-run')?.addEventListener('click', runPipeline);
-  $('#pipe-clear')?.addEventListener('click', ()=>{
-    $$('.pipe-add').forEach(c=>c.checked=false);
-    PIPELINE = [];
-    drawFlow(); $('#validation').textContent='—'; pipeMsg('Pipeline cleared');
-  });
-
-  // start session automatically
-  startSession();
+  setupModeToggle();
+  renderPalette();
+  renderGraph();
 });
+
+window.BulkDag = {
+  serialize: () => ({
+    nodes: Object.values(DAG_STATE.nodes).map(cloneNode),
+    edges: DAG_STATE.edges.map(edge => ({...edge})),
+  }),
+  topoOrder,
+  getNodes: () => Object.values(DAG_STATE.nodes).map(cloneNode),
+  getEdges: () => DAG_STATE.edges.map(edge => ({...edge})),
+  getNode: id => (DAG_STATE.nodes[id] ? cloneNode(DAG_STATE.nodes[id]) : null),
+  hasNodes: () => Object.keys(DAG_STATE.nodes).length > 0,
+  setNodeStatus,
+  resetStatuses,
+  recordChannelArtifacts,
+  getChannelArtifacts: () => ({...CHANNEL_ARTIFACTS}),
+};
+
+function setupModeToggle(){
+  const radios = document.querySelectorAll('input[name="bulk-mode"]');
+  if(!radios.length) return;
+  const notes = {
+    single: 'Single-end: build a linear flow with Add to pipeline.',
+    paired: 'Paired-end: use the DAG builder for R1/R2 inputs.',
+  };
+  const apply = (mode) => {
+    const body = document.body;
+    if(!body) return;
+    body.classList.toggle('mode-single', mode === 'single');
+    body.classList.toggle('mode-paired', mode === 'paired');
+    window.__BULK_MODE = mode;
+    const note = document.getElementById('mode-note');
+    if(note){
+      note.textContent = notes[mode] || '';
+    }
+  };
+  radios.forEach(radio => {
+    radio.addEventListener('change', () => {
+      if(radio.checked){
+        apply(radio.value);
+      }
+    });
+  });
+  const initial = Array.from(radios).find(r => r.checked)?.value || 'single';
+  apply(initial);
+}

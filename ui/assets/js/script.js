@@ -2,12 +2,109 @@
 let SID = null;
 let UNITS_META = [];
 let PIPELINE = []; // keeps {unit, label, card} in the order of user clicks
+let BULK_DAG = createEmptyBulkDag(); // structured graph (WIP)
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // This page is BULK only
 const UNIT_GROUP = 'bulk';
+
+/* ---------- DAG foundation (for future branched pipelines) ---------- */
+const CHANNEL_MAP = {
+  filter_quality: { consumes: ['R1','R2'], produces: ['R1','R2'] },
+  filter_length: { consumes: ['R1','R2'], produces: ['R1','R2'] },
+  filter_missing: { consumes: ['R1','R2'], produces: ['R1','R2'] },
+  filter_repeats: { consumes: ['R1','R2'], produces: ['R1','R2'] },
+  filter_trimqual: { consumes: ['R1','R2'], produces: ['R1','R2'] },
+  filter_maskqual: { consumes: ['R1','R2'], produces: ['R1','R2'] },
+  mask_primers: { consumes: ['R1','R2','PAIR1','PAIR2'], produces: ['R1','R2','PAIR1','PAIR2'] },
+  pairseq: { consumes: ['R1','R2'], produces: ['PAIR1','PAIR2'] },
+  assemble_align: { consumes: ['PAIR1','PAIR2'], produces: ['ASSEMBLED'] },
+  assemble_join: { consumes: ['PAIR1','PAIR2'], produces: ['ASSEMBLED'] },
+  assemble_sequential: { consumes: ['PAIR1','PAIR2'], produces: ['ASSEMBLED'] },
+  collapse_seq: { consumes: ['ASSEMBLED'], produces: ['ASSEMBLED'] },
+  build_consensus: { consumes: ['R1','R2','PAIR1','PAIR2'], produces: ['R1','R2','PAIR1','PAIR2'] },
+};
+
+function createEmptyBulkDag(){
+  return { nodes: {}, edges: [] };
+}
+function dagNodeId(){
+  return `node_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
+}
+function unitChannels(unitId){
+  return CHANNEL_MAP[unitId] || { consumes: [], produces: [] };
+}
+function dagAddNode(unitId, options = {}){
+  const id = options.id || dagNodeId();
+  BULK_DAG.nodes[id] = {
+    id,
+    unitId,
+    label: options.label || unitId,
+    params: options.params || {},
+    channel: options.channel || null,
+    meta: unitChannels(unitId),
+  };
+  return BULK_DAG.nodes[id];
+}
+function dagRemoveNode(nodeId){
+  delete BULK_DAG.nodes[nodeId];
+  BULK_DAG.edges = BULK_DAG.edges.filter(e => e.from !== nodeId && e.to !== nodeId);
+}
+function dagConnect(fromId, toId, channel = null){
+  if(!BULK_DAG.nodes[fromId] || !BULK_DAG.nodes[toId]) return;
+  BULK_DAG.edges.push({ from: fromId, to: toId, channel });
+}
+function dagDisconnect(fromId, toId){
+  BULK_DAG.edges = BULK_DAG.edges.filter(e => !(e.from === fromId && e.to === toId));
+}
+function dagIncoming(nodeId){
+  return BULK_DAG.edges.filter(e => e.to === nodeId).map(e => e.from);
+}
+function dagOutgoing(nodeId){
+  return BULK_DAG.edges.filter(e => e.from === nodeId).map(e => e.to);
+}
+function serializeDag(){
+  return {
+    nodes: Object.values(BULK_DAG.nodes),
+    edges: BULK_DAG.edges.slice(),
+  };
+}
+function hydrateDag(payload){
+  BULK_DAG = createEmptyBulkDag();
+  if(!payload) return;
+  (payload.nodes || []).forEach(node => {
+    BULK_DAG.nodes[node.id] = {
+      id: node.id,
+      unitId: node.unitId,
+      label: node.label,
+      params: node.params || {},
+      channel: node.channel || null,
+      meta: unitChannels(node.unitId),
+    };
+  });
+  BULK_DAG.edges = (payload.edges || []).filter(e => BULK_DAG.nodes[e.from] && BULK_DAG.nodes[e.to]);
+}
+function dagTopoOrder(){
+  const indegree = {};
+  Object.keys(BULK_DAG.nodes).forEach(id => indegree[id] = 0);
+  BULK_DAG.edges.forEach(({to}) => { if(indegree[to] !== undefined) indegree[to]++; });
+  const queue = Object.keys(indegree).filter(id => indegree[id] === 0);
+  const order = [];
+  while(queue.length){
+    const node = queue.shift();
+    order.push(node);
+    dagOutgoing(node).forEach(next => {
+      indegree[next]--;
+      if(indegree[next] === 0) queue.push(next);
+    });
+  }
+  if(order.length !== Object.keys(BULK_DAG.nodes).length){
+    return null; // cycle detected
+  }
+  return order;
+}
 
 /* ---------- Category config to reduce scrolling ---------- */
 const CATEGORIES = {
@@ -49,6 +146,11 @@ function drawFlow(){
 function pipeMsg(text, cls='muted'){ const p = $('#pipe-msg'); p.className = cls; p.textContent = text; }
 function setRunStatus(text){ $('#run-status').innerHTML = text; }
 function setProgress(i, n){ const pct = n ? Math.round((i/n)*100) : 0; $('#run-bar').style.width = pct + '%'; }
+function hasDagPipeline(){
+  const isPaired = (window.__BULK_MODE || '').toLowerCase() === 'paired' || document.body.classList.contains('mode-paired');
+  const api = window.BulkDag;
+  return isPaired && !!(api && typeof api.hasNodes === 'function' && api.hasNodes());
+}
 
 async function startSession(){
   const r = await fetch('/session/start',{method:'POST'});
@@ -115,6 +217,39 @@ async function runUnit(card, unitId){
   const lr = await fetch(`/session/${SID}/log/${stepIdx}`);
   $('#log').textContent = await lr.text();
   return true;
+}
+
+async function runDagNode(node){
+  const payload = {
+    unit_id: node.unitId,
+    params: node.params || {},
+  };
+  try{
+    const res = await fetch(`/session/${SID}/run`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    let data = {};
+    try{
+      data = await res.json();
+    }catch(e){
+      data = {};
+    }
+    if(!res.ok){
+      const logTail = data.detail?.log_tail || '';
+      if(logTail) $('#log').textContent = logTail;
+      return { ok:false, error: data.detail?.error || res.statusText };
+    }
+    await refreshState();
+    if(data.step?.step_index !== undefined){
+      const lr = await fetch(`/session/${SID}/log/${data.step.step_index}`);
+      $('#log').textContent = await lr.text();
+    }
+    return { ok:true };
+  }catch(err){
+    return { ok:false, error: err.message };
+  }
 }
 
 async function refreshState(){
@@ -271,6 +406,27 @@ async function renderUnits(){
 }
 
 /* ===== Validation ===== */
+function validateDagPipeline(dagApi){
+  const snapshot = dagApi.serialize?.();
+  if(!snapshot || snapshot.nodes.length === 0){
+    $('#validation').innerHTML = '<span class="warn">Add nodes to the DAG to validate.</span>';
+    pipeMsg('No DAG nodes selected','warn');
+    return false;
+  }
+  const order = dagApi.topoOrder?.();
+  if(!order){
+    $('#validation').innerHTML = '<div class="err">Cycle detected in DAG. Fix connections.</div>';
+    pipeMsg('Cycle detected in DAG','err');
+    return false;
+  }
+  const labelMap = {};
+  snapshot.nodes.forEach(n => labelMap[n.id] = n.label);
+  const rows = order.map((id, idx) => `<div>${idx+1}. ${esc(labelMap[id] || id)}</div>`).join('');
+  $('#validation').innerHTML = rows;
+  pipeMsg('DAG validation OK','ok');
+  return true;
+}
+
 function validateMaskPrimers(step){
   const card = step.card;
   const variant = (card.querySelector('[name="variant"]')?.value || 'align').toLowerCase();
@@ -300,6 +456,11 @@ function validateConsensus(step){
 }
 
 function validatePipeline(){
+  const dagApi = window.BulkDag;
+  if(dagApi?.hasNodes?.()){
+    validateDagPipeline(dagApi);
+    return;
+  }
   const steps = selectedSteps();
   drawFlow();
   if(steps.length===0){ $('#validation').innerHTML = '<span class="warn">No steps selected.</span>'; return; }
@@ -324,7 +485,7 @@ function validatePipeline(){
 }
 
 /* ===== Run Pipeline ===== */
-async function runPipeline(){
+async function runLinearPipeline(){
   const steps = selectedSteps();
   const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
   if(bulkSteps.length === 0){ pipeMsg('No bulk steps selected','warn'); return; }
@@ -342,6 +503,94 @@ async function runPipeline(){
     if(!ok){ setRunStatus(`Failed at <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`); pipeMsg('Pipeline failed','err'); return; }
   }
   setRunStatus('Finished ✅'); pipeMsg('Pipeline finished','ok');
+}
+
+
+async function runPipeline(){
+  if(hasDagPipeline()){
+    await runDagPipeline();
+  } else {
+    await runLinearPipeline();
+  }
+}
+
+async function runDagPipeline(){
+  const dag = window.BulkDag;
+  if(!dag){
+    pipeMsg('DAG runtime unavailable','err');
+    return;
+  }
+  const nodes = dag.getNodes?.() || [];
+  if(nodes.length === 0){
+    pipeMsg('Add nodes to the DAG first','warn');
+    $('#validation').innerHTML = '<span class="warn">DAG is empty.</span>';
+    return;
+  }
+  const order = dag.topoOrder?.();
+  if(!order){
+    pipeMsg('Cycle detected in DAG','err');
+    $('#validation').innerHTML = '<div class="err">Cycle detected. Fix connections.</div>';
+    return;
+  }
+  dag.resetStatuses?.();
+  const edges = dag.getEdges?.() || [];
+  const incoming = {};
+  edges.forEach(edge => {
+    if(!incoming[edge.to]) incoming[edge.to] = [];
+    incoming[edge.to].push(edge.from);
+  });
+  const nodeMap = {};
+  nodes.forEach(n => { nodeMap[n.id] = n; });
+
+  setRunStatus('Starting DAG pipeline');
+  pipeMsg('Running DAG pipeline','muted');
+  const total = order.length;
+  setProgress(0, total);
+  let completed = 0;
+  const succeeded = new Set();
+  const failed = new Set();
+
+  for(const nodeId of order){
+    const node = nodeMap[nodeId];
+    if(!node) continue;
+    const deps = incoming[nodeId] || [];
+    const blocked = deps.some(dep => failed.has(dep));
+    if(blocked){
+      dag.setNodeStatus?.(nodeId,'blocked');
+      continue;
+    }
+    dag.setNodeStatus?.(nodeId,'running');
+    setRunStatus(`Running <b>${esc(node.label)}</b> (${completed+1}/${total})`);
+    const result = await runDagNode(node);
+    if(result.ok){
+      completed++;
+      succeeded.add(nodeId);
+      dag.setNodeStatus?.(nodeId,'done');
+      setProgress(completed, total);
+      const current = window.__SESSION_STATE__?.current || {};
+      dag.recordChannelArtifacts?.(nodeId, current);
+    } else {
+      failed.add(nodeId);
+      dag.setNodeStatus?.(nodeId,'error');
+      pipeMsg(`Node ${node.label} failed: ${result.error || 'see log'}`,'err');
+      setRunStatus(`Failed at <b>${esc(node.label)}</b>`);
+      break;
+    }
+  }
+
+  if(failed.size){
+    order.forEach(nodeId => {
+      if(!failed.has(nodeId) && !succeeded.has(nodeId)){
+        const deps = incoming[nodeId] || [];
+        if(deps.some(dep => failed.has(dep))){
+          dag.setNodeStatus?.(nodeId,'blocked');
+        }
+      }
+    });
+    return;
+  }
+  pipeMsg('DAG pipeline finished','ok');
+  setRunStatus('Finished DAG pipeline');
 }
 
 /* ===== Wire up ===== */
