@@ -2,15 +2,11 @@
 let SID = null;
 let UNITS_META = [];
 let PIPELINE = []; // keeps {unit, label, card} in the order of user clicks
-let BULK_DAG = createEmptyBulkDag(); // structured graph (WIP)
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-// This page is BULK only
-const UNIT_GROUP = 'bulk';
-
-/* ---------- DAG foundation (for future branched pipelines) ---------- */
+/* ---------- Channel mapping for DAG metadata sync ---------- */
 const CHANNEL_MAP = {
   filter_quality: { consumes: ['R1','R2'], produces: ['R1','R2'] },
   filter_length: { consumes: ['R1','R2'], produces: ['R1','R2'] },
@@ -26,85 +22,7 @@ const CHANNEL_MAP = {
   collapse_seq: { consumes: ['ASSEMBLED'], produces: ['ASSEMBLED'] },
   build_consensus: { consumes: ['R1','R2','PAIR1','PAIR2'], produces: ['R1','R2','PAIR1','PAIR2'] },
 };
-
-function createEmptyBulkDag(){
-  return { nodes: {}, edges: [] };
-}
-function dagNodeId(){
-  return `node_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
-}
-function unitChannels(unitId){
-  return CHANNEL_MAP[unitId] || { consumes: [], produces: [] };
-}
-function dagAddNode(unitId, options = {}){
-  const id = options.id || dagNodeId();
-  BULK_DAG.nodes[id] = {
-    id,
-    unitId,
-    label: options.label || unitId,
-    params: options.params || {},
-    channel: options.channel || null,
-    meta: unitChannels(unitId),
-  };
-  return BULK_DAG.nodes[id];
-}
-function dagRemoveNode(nodeId){
-  delete BULK_DAG.nodes[nodeId];
-  BULK_DAG.edges = BULK_DAG.edges.filter(e => e.from !== nodeId && e.to !== nodeId);
-}
-function dagConnect(fromId, toId, channel = null){
-  if(!BULK_DAG.nodes[fromId] || !BULK_DAG.nodes[toId]) return;
-  BULK_DAG.edges.push({ from: fromId, to: toId, channel });
-}
-function dagDisconnect(fromId, toId){
-  BULK_DAG.edges = BULK_DAG.edges.filter(e => !(e.from === fromId && e.to === toId));
-}
-function dagIncoming(nodeId){
-  return BULK_DAG.edges.filter(e => e.to === nodeId).map(e => e.from);
-}
-function dagOutgoing(nodeId){
-  return BULK_DAG.edges.filter(e => e.from === nodeId).map(e => e.to);
-}
-function serializeDag(){
-  return {
-    nodes: Object.values(BULK_DAG.nodes),
-    edges: BULK_DAG.edges.slice(),
-  };
-}
-function hydrateDag(payload){
-  BULK_DAG = createEmptyBulkDag();
-  if(!payload) return;
-  (payload.nodes || []).forEach(node => {
-    BULK_DAG.nodes[node.id] = {
-      id: node.id,
-      unitId: node.unitId,
-      label: node.label,
-      params: node.params || {},
-      channel: node.channel || null,
-      meta: unitChannels(node.unitId),
-    };
-  });
-  BULK_DAG.edges = (payload.edges || []).filter(e => BULK_DAG.nodes[e.from] && BULK_DAG.nodes[e.to]);
-}
-function dagTopoOrder(){
-  const indegree = {};
-  Object.keys(BULK_DAG.nodes).forEach(id => indegree[id] = 0);
-  BULK_DAG.edges.forEach(({to}) => { if(indegree[to] !== undefined) indegree[to]++; });
-  const queue = Object.keys(indegree).filter(id => indegree[id] === 0);
-  const order = [];
-  while(queue.length){
-    const node = queue.shift();
-    order.push(node);
-    dagOutgoing(node).forEach(next => {
-      indegree[next]--;
-      if(indegree[next] === 0) queue.push(next);
-    });
-  }
-  if(order.length !== Object.keys(BULK_DAG.nodes).length){
-    return null; // cycle detected
-  }
-  return order;
-}
+const DAG_BRANCH_KEYS = ['R1','R2'];
 
 /* ---------- Category config to reduce scrolling ---------- */
 const CATEGORIES = {
@@ -124,98 +42,353 @@ const CATEGORIES = {
 };
 const CAT_BY_ID = {};
 Object.entries(CATEGORIES).forEach(([cat, ids])=>ids.forEach(id=>CAT_BY_ID[id]=cat));
-function unitCategory(id){ return CAT_BY_ID[id] || "Other"; }
+function unitCategory(id) {
+  return CAT_BY_ID[id] || "Other";
+}
 
-function selectedSteps(){
+function selectedSteps() {
   // Return pipeline in click order, but drop items whose checkbox is no longer checked
-  PIPELINE = PIPELINE.filter(s => s.card && s.card.querySelector('.pipe-add')?.checked);
+  PIPELINE = PIPELINE.filter(step => step.card && step.card.querySelector('.pipe-add')?.checked);
   return [...PIPELINE];
 }
 
-function drawFlow(){
+function drawFlow() {
   const steps = selectedSteps();
-  const flow = $('#flow'); flow.innerHTML = '';
-  if(steps.length === 0){ flow.innerHTML = '<span class="muted">no steps selected</span>'; return; }
-  steps.forEach((s,i) => {
-    const n = document.createElement('div'); n.className = 'node'; n.textContent = s.label;
-    flow.appendChild(n);
-    if(i < steps.length-1){ const a = document.createElement('div'); a.className = 'arrow'; a.textContent = '→'; flow.appendChild(a); }
+  const flow = $('#flow');
+  flow.innerHTML = '';
+  if (steps.length === 0) {
+    flow.innerHTML = '<span class="muted">no steps selected</span>';
+    return;
+  }
+  steps.forEach((step, index) => {
+    const node = document.createElement('div');
+    node.className = 'node';
+    node.textContent = step.label;
+    flow.appendChild(node);
+    if (index < steps.length - 1) {
+      const arrow = document.createElement('div');
+      arrow.className = 'arrow';
+      arrow.textContent = '→';
+      flow.appendChild(arrow);
+    }
   });
 }
 
-function pipeMsg(text, cls='muted'){ const p = $('#pipe-msg'); p.className = cls; p.textContent = text; }
-function setRunStatus(text){ $('#run-status').innerHTML = text; }
-function setProgress(i, n){ const pct = n ? Math.round((i/n)*100) : 0; $('#run-bar').style.width = pct + '%'; }
+function pipeMsg(text, cls = 'muted') {
+  const msgElement = $('#pipe-msg');
+  msgElement.className = cls;
+  msgElement.textContent = text;
+}
+
+function setRunStatus(text) {
+  $('#run-status').innerHTML = text;
+}
+
+function setProgress(current, total) {
+  const percentage = total ? Math.round((current / total) * 100) : 0;
+  $('#run-bar').style.width = percentage + '%';
+}
+function setBranchProgress(branch, completed, total, state){
+  const key = (branch || '').toUpperCase();
+  const bar = document.getElementById(`branch-bar-${key}`);
+  const status = document.getElementById(`branch-status-${key}`);
+  const row = document.querySelector(`.branch-progress-row[data-branch="${key}"]`);
+  const percent = total ? Math.round((completed / total) * 100) : 0;
+  if(bar){
+    bar.style.width = percent + '%';
+  }
+  if(status){
+    let label = total ? `${completed}/${total}` : 'No nodes';
+    if(state === 'error'){
+      label += ' (error)';
+    } else if(state === 'blocked'){
+      label += ' (blocked)';
+    }
+    status.textContent = label;
+    status.classList.remove('err','warn');
+    if(state === 'error'){
+      status.classList.add('err');
+    } else if(state === 'blocked'){
+      status.classList.add('warn');
+    }
+  }
+  if(row){
+    row.classList.toggle('empty', !total);
+  }
+}
+function resetBranchProgress(){
+  DAG_BRANCH_KEYS.forEach(branch => setBranchProgress(branch, 0, 0));
+}
 function hasDagPipeline(){
   const isPaired = (window.__BULK_MODE || '').toLowerCase() === 'paired' || document.body.classList.contains('mode-paired');
   const api = window.BulkDag;
   return isPaired && !!(api && typeof api.hasNodes === 'function' && api.hasNodes());
 }
 
-async function startSession(){
-  const r = await fetch('/session/start',{method:'POST'});
-  const j = await r.json();
-  SID = j.session_id; $('#sid').textContent = SID;
+async function startSession() {
+  const response = await fetch('/session/start', { method: 'POST' });
+  const data = await response.json();
+  SID = data.session_id;
+  $('#sid').textContent = SID;
   PIPELINE = []; // reset
   await renderUnits();
   drawFlow();
   await refreshState();
   $('#validation').textContent = '—';
-  setRunStatus('—'); setProgress(0,1);
+  setRunStatus('—');
+  setProgress(0, 1);
+  resetBranchProgress();
 }
 
-async function uploadReads(){
-  const r1 = $('#r1f').files[0]; if(!r1){ alert('Choose R1'); return; }
-  const fd = new FormData(); fd.append('r1', r1);
-  const r2 = $('#r2f').files[0]; if(r2) fd.append('r2', r2);
-  const r = await fetch(`/session/${SID}/upload`, {method:'POST', body:fd});
-  if(!r.ok){ alert('Upload failed'); return; }
+async function uploadReads() {
+  const r1File = $('#r1f').files[0];
+  if (!r1File) {
+    alert('Choose R1');
+    return;
+  }
+  const formData = new FormData();
+  formData.append('r1', r1File);
+  const r2File = $('#r2f').files[0];
+  if (r2File) {
+    formData.append('r2', r2File);
+  }
+  const response = await fetch(`/session/${SID}/upload`, {
+    method: 'POST',
+    body: formData
+  });
+  if (!response.ok) {
+    alert('Upload failed');
+    return;
+  }
   await refreshState();
 }
 
-async function uploadAux(){
-  const f = $('#auxf').files[0]; if(!f){ alert('Choose file'); return; }
-  const fd = new FormData(); fd.append('file', f);
-  const name = $('#auxname').value.trim(); if(name) fd.append('name', name);
-  const r = await fetch(`/session/${SID}/upload-aux`, {method:'POST', body:fd});
-  const j = await r.json();
-  $('#aux-out').textContent = `Stored as: ${j.stored_as}` + (j.role && j.role!=='other' ? ` (auto as ${j.role})` : '');
-  // auto-fill in MaskPrimers cards
-  if(j.role === 'v_primers' || j.role === 'other'){
-    $$('.card[data-unit="mask_primers"] input[name="v_primers_fname"]').forEach(el => { if(!el.value) el.value = j.stored_as; });
+async function uploadAux() {
+  const file = $('#auxf').files[0];
+  if (!file) {
+    alert('Choose file');
+    return;
   }
-  if(j.role === 'c_primers'){
-    $$('.card[data-unit="mask_primers"] input[name="c_primers_fname"]').forEach(el => { if(!el.value) el.value = j.stored_as; });
+  const formData = new FormData();
+  formData.append('file', file);
+  const name = $('#auxname').value.trim();
+  if (name) {
+    formData.append('name', name);
+  }
+  const response = await fetch(`/session/${SID}/upload-aux`, {
+    method: 'POST',
+    body: formData
+  });
+  const data = await response.json();
+  $('#aux-out').textContent = `Stored as: ${data.stored_as}` +
+    (data.role && data.role !== 'other' ? ` (auto as ${data.role})` : '');
+  // auto-fill in MaskPrimers cards
+  if (data.role === 'v_primers' || data.role === 'other') {
+    $$('.card[data-unit="mask_primers"] input[name="v_primers_fname"]').forEach(el => {
+      if (!el.value) {
+        el.value = data.stored_as;
+      }
+    });
+  }
+  if (data.role === 'c_primers') {
+    $$('.card[data-unit="mask_primers"] input[name="c_primers_fname"]').forEach(el => {
+      if (!el.value) {
+        el.value = data.stored_as;
+      }
+    });
   }
 }
 
-function collectParams(card){
+function collectParams(card) {
   const params = {};
-  card.querySelectorAll('input,select,textarea').forEach(el => {
-    if(!el.name) return;
-    if(el.type === 'file') return;
-    if(el.classList.contains('pipe-add')) return;
-    params[el.name] = (el.type === 'checkbox') ? (el.checked ? 'true' : 'false') : el.value;
+  card.querySelectorAll('input,select,textarea').forEach(element => {
+    if (!element.name) {
+      return;
+    }
+    if (element.type === 'file') {
+      return;
+    }
+    if (element.classList.contains('pipe-add')) {
+      return;
+    }
+    params[element.name] = (element.type === 'checkbox') ?
+      (element.checked ? 'true' : 'false') : element.value;
   });
   return params;
 }
 
-async function runUnit(card, unitId){
+function availableDagFiles(){
+  const files = [];
+  const seen = new Set();
+  const state = window.__SESSION_STATE__ || {};
+  const artifacts = state.artifacts || {};
+  const regex = /\.(fastq|fq|fasta|fa)(\.gz)?$/i;
+
+  const addArtifact = (artifactKey, entry, channelHint, prefixLabel) => {
+    if(!artifactKey || seen.has(artifactKey)) return;
+    const fileLabel = (entry && (entry.path || entry.name || artifactKey)) || artifactKey;
+    const kind = (entry?.kind || '').toLowerCase();
+    const looksLikeSeq = regex.test(fileLabel) || kind === 'fastq' || kind === 'fasta';
+    if(!looksLikeSeq) return;
+    const channel = (channelHint || entry?.channel || guessChannel(fileLabel) || '').toUpperCase();
+    const labelParts = [];
+    if(prefixLabel) labelParts.push(prefixLabel);
+    if(channel) labelParts.push(channel);
+    labelParts.push(fileLabel);
+    files.push({ value: artifactKey, label: labelParts.filter(Boolean).join(' - '), channel });
+    seen.add(artifactKey);
+  };
+
+  Object.entries(state.current || {}).forEach(([channelKey, artifactKey]) => {
+    const entry = artifacts[artifactKey];
+    addArtifact(artifactKey, entry, channelKey, `${channelKey} current`);
+  });
+
+  Object.entries(artifacts).forEach(([artifactKey, entry]) => {
+    addArtifact(artifactKey, entry, entry?.channel || '', '');
+  });
+  return files;
+}
+
+function guessChannel(name){
+  if(!name) return '';
+  const upper = name.toUpperCase();
+  if(upper.includes('TRA')) return 'TRA';
+  if(upper.includes('TRB')) return 'TRB';
+  if(upper.includes('R2')) return 'R2';
+  if(upper.includes('MERGED')) return 'MERGED';
+  if(upper.includes('R1')) return 'R1';
+  return '';
+}
+
+function fillDagSelect(select, files){
+  if(!select) return;
+  const prev = select.value;
+  const allowed = (select.dataset.channels || '').split(',').map(s=>s.trim()).filter(Boolean);
+  const fixed = (select.dataset.channel || '').toUpperCase();
+  select.innerHTML = '<option value="">Select file...</option>';
+  files.forEach(file => {
+    const channel = file.channel || guessChannel(file.value);
+    if(fixed && channel && channel !== fixed) return;
+    if(allowed.length && channel && !allowed.includes(channel)) return;
+    const opt = document.createElement('option');
+    opt.value = file.value;
+    opt.textContent = file.label;
+    opt.dataset.channel = channel || '';
+    select.appendChild(opt);
+  });
+  if(prev && Array.from(select.options).some(opt => opt.value === prev)){
+    select.value = prev;
+  }
+}
+
+function refreshDagFileSelects(){
+  const files = availableDagFiles();
+  document.querySelectorAll('.dag-file-select').forEach(select => fillDagSelect(select, files));
+}
+
+function determineDagBranch(meta, selections){
+  const firstSelectionChannel = (selections || [])
+    .map(sel => (sel.channel || '').toUpperCase())
+    .find(Boolean);
+  if(meta.branchTarget) return meta.branchTarget;
+  if(meta.dynamicBranch){
+    return firstSelectionChannel || meta.branches?.[0] || 'R1';
+  }
+  if(firstSelectionChannel && meta.branches?.includes(firstSelectionChannel)){
+    return firstSelectionChannel;
+  }
+  if(meta.branches && meta.branches.length){
+    return meta.branches[0];
+  }
+  return firstSelectionChannel || 'R1';
+}
+
+function decorateDagControls(card, unit){
+  const dagApi = window.BulkDag;
+  if(!dagApi?.getUnitMeta || !dagApi?.createNode) return;
+  const meta = dagApi.getUnitMeta(unit.id);
+  if(!meta) return;
+  const inputs = Array.isArray(meta.inputs) && meta.inputs.length
+    ? meta.inputs
+    : (meta.dynamicBranch ? [{ id: 'input', label: 'Input FASTQ', channels: meta.branches || ['R1','R2'] }] : []);
+  if(!inputs.length) return;
+
+  const block = document.createElement('div');
+  block.className = 'dag-controls dag-only';
+  block.innerHTML = '<div class="muted">Select FASTQ/FASTA files to add this unit as a DAG node.</div>';
+
+  const selects = [];
+  inputs.forEach(input => {
+    const label = document.createElement('label');
+    label.textContent = input.label || 'Input file';
+    const select = document.createElement('select');
+    select.className = 'dag-file-select';
+    if(input.channels) select.dataset.channels = input.channels.map(ch=>ch.toUpperCase()).join(',');
+    if(input.channel) select.dataset.channel = input.channel.toUpperCase();
+    select.dataset.inputId = input.id || (input.label || unit.id);
+    label.appendChild(select);
+    block.appendChild(label);
+    selects.push(select);
+  });
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.textContent = 'Add to DAG';
+  addBtn.addEventListener('click', () => {
+    const selections = [];
+    let valid = true;
+    selects.forEach(select => {
+      const value = select.value;
+      if(!value){
+        valid = false;
+        select.classList.add('input-error');
+      } else {
+        select.classList.remove('input-error');
+      }
+      const option = select.selectedOptions[0];
+      selections.push({
+        id: select.dataset.inputId,
+        file: value,
+        channel: select.dataset.channel || (option?.dataset.channel || '').toUpperCase(),
+      });
+    });
+    if(!valid){
+      alert('Select file(s) before adding this node.');
+      return;
+    }
+    const branch = determineDagBranch(meta, selections);
+    const params = collectParams(card);
+    params.__files = selections.map(s => `${s.id}:${s.file}`).join(',');
+    dagApi.createNode(unit.id, branch, {
+      params,
+      inputs: selections,
+    });
+  });
+  block.appendChild(addBtn);
+
+  const actions = card.querySelector('.actions');
+  actions?.insertAdjacentElement('afterbegin', block);
+  refreshDagFileSelects();
+}
+async function runUnit(card, unitId) {
   const params = collectParams(card);
-  const r = await fetch(`/session/${SID}/run`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
+  const response = await fetch(`/session/${SID}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ unit_id: unitId, params })
   });
-  const j = await r.json();
-  if(!r.ok){
-    alert(`Error: ${(j.detail && (j.detail.error||j.detail)) || r.statusText}`);
-    $('#log').textContent = (j.detail && j.detail.log_tail) ? j.detail.log_tail : '';
+  const data = await response.json();
+  if (!response.ok) {
+    const errorMsg = (data.detail && (data.detail.error || data.detail)) || response.statusText;
+    alert(`Error: ${errorMsg}`);
+    $('#log').textContent = (data.detail && data.detail.log_tail) ? data.detail.log_tail : '';
     return false;
   }
   await refreshState();
-  const stepIdx = j.step.step_index;
-  const lr = await fetch(`/session/${SID}/log/${stepIdx}`);
-  $('#log').textContent = await lr.text();
+  const stepIndex = data.step.step_index;
+  const logResponse = await fetch(`/session/${SID}/log/${stepIndex}`);
+  $('#log').textContent = await logResponse.text();
   return true;
 }
 
@@ -252,14 +425,19 @@ async function runDagNode(node){
   }
 }
 
-async function refreshState(){
-  const r = await fetch(`/session/${SID}/state`);
-  const s = await r.json();
-  const chips = Object.entries(s.current||{}).map(([k,v]) => `<span class="chip">${esc(k)}: ${esc(v)}</span>`).join(' ');
+async function refreshState() {
+  const response = await fetch(`/session/${SID}/state`);
+  const state = await response.json();
+  const chips = Object.entries(state.current || {}).map(([key, value]) =>
+    `<span class="chip">${esc(key)}: ${esc(value)}</span>`
+  ).join(' ');
   $('#state').innerHTML = chips || '<span class="muted">no state</span>';
-  const arts = Object.values(s.artifacts||{}).map(a => `<div>${esc(a.name)} — <a href="/session/${SID}/download/${encodeURIComponent(a.name)}">download</a></div>`).join('');
-  $('#arts').innerHTML = arts || '<span class="muted">none</span>';
-  window.__SESSION_STATE__ = s;
+  const artifacts = Object.values(state.artifacts || {}).map(artifact =>
+    `<div>${esc(artifact.name)} — <a href="/session/${SID}/download/${encodeURIComponent(artifact.name)}">download</a></div>`
+  ).join('');
+  $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
+  window.__SESSION_STATE__ = state;
+  refreshDagFileSelects();
 }
 
 /* -------------------- New grouped render -------------------- */
@@ -321,6 +499,7 @@ function makeUnitCard(u){
 
   // searchable haystack
   card.dataset.haystack = [u.id, u.label, ...(u.requires||[]), unitCategory(u.id)].join(' ').toLowerCase();
+  decorateDagControls(card, u);
   return card;
 }
 
@@ -346,6 +525,8 @@ async function renderUnits(){
     if (label.startsWith('sc:')) return false;   // visible label hint
     return true;                                 // treat everything else as bulk
   });
+
+  syncDagMetaFromUnits(UNITS_META);
 
   const byCat = {};
   UNITS_META.forEach(u => {
@@ -403,6 +584,76 @@ async function renderUnits(){
     collapseBtn.dataset.wired = '1';
     collapseBtn.addEventListener('click', ()=>mount.querySelectorAll('details.group').forEach(d=>d.open=false));
   }
+
+  refreshDagFileSelects();
+}
+
+function syncDagMetaFromUnits(units) {
+  const exporter = window.BulkDag && window.BulkDag.loadUnitMeta;
+  if (!exporter) {
+    return;
+  }
+  const metaMap = {};
+  units.forEach(unit => {
+    if (!(unit.id || '').startsWith('sc_')) { // keep bulk units only
+      const dag = unit.dag_meta || {};
+      const ch = dag.channels || {};
+      const consumes = dag.consumes || dag.inputs || ch.consumes || ch.inputs || [];
+      const produces = dag.produces || dag.outputs || ch.produces || ch.outputs || consumes || [];
+      const rawBranches = dag.branches || dag.allowed_branches || ch.branches || dag.branch;
+      const branches = Array.isArray(rawBranches) && rawBranches.length ? rawBranches : ['R1','R2'];
+      const inputDefs = Array.isArray(dag.inputs) ? dag.inputs : [];
+      
+      // Use CHANNEL_MAP as fallback if no dag_meta
+      const channelInfo = CHANNEL_MAP[unit.id] || { consumes: [], produces: [] };
+      const finalConsumes = consumes.length ? consumes : channelInfo.consumes;
+      const finalProduces = produces.length ? produces : channelInfo.produces;
+      
+      const meta = {
+        label: unit.label || unit.id,
+        consumes: Array.isArray(finalConsumes) && finalConsumes.length ? finalConsumes : ['R1'],
+        produces: Array.isArray(finalProduces) && finalProduces.length ? finalProduces : (Array.isArray(finalConsumes) && finalConsumes.length ? finalConsumes : ['R1']),
+        branches,
+        params: Object.entries(unit.params_schema || {}).map(([key, val]) => ({
+          key,
+          label: val.label || key,
+          type: val.type === 'select' ? 'select' : (val.type === 'number' || val.type === 'int' ? 'number' : 'text'),
+          options: val.options || [],
+          default: val.default,
+          min: val.min,
+          max: val.max,
+          step: val.step,
+          placeholder: val.placeholder,
+          help: val.help,
+        })),
+      };
+      if (dag.dynamicBranch) {
+        meta.dynamicBranch = true;
+      }
+      if (dag.branch_target) {
+        meta.branchTarget = dag.branch_target;
+      }
+      if (inputDefs.length) {
+        meta.inputs = inputDefs.map(inp => ({
+          id: inp.id,
+          label: inp.label,
+          channel: inp.channel,
+          channels: inp.channels || inp.channelOptions,
+        }));
+      } else {
+        const channels = meta.dynamicBranch
+          ? (meta.branches && meta.branches.length ? meta.branches : ['R1','R2'])
+          : (meta.consumes && meta.consumes.length ? meta.consumes : ['R1']);
+        meta.inputs = [{
+          id: 'input',
+          label: 'Input FASTQ/FASTA',
+          channels: channels.map(ch => ch.toUpperCase()),
+        }];
+      }
+      metaMap[unit.id] = meta;
+    }
+  });
+  exporter(metaMap);
 }
 
 /* ===== Validation ===== */
@@ -535,58 +786,120 @@ async function runDagPipeline(){
   dag.resetStatuses?.();
   const edges = dag.getEdges?.() || [];
   const incoming = {};
+  const dependents = {};
   edges.forEach(edge => {
     if(!incoming[edge.to]) incoming[edge.to] = [];
     incoming[edge.to].push(edge.from);
+    if(!dependents[edge.from]) dependents[edge.from] = [];
+    dependents[edge.from].push(edge.to);
   });
   const nodeMap = {};
   nodes.forEach(n => { nodeMap[n.id] = n; });
+  const indegree = {};
+  nodes.forEach(n => indegree[n.id] = (incoming[n.id] || []).length);
+  const branchTotals = {};
+  const branchCompleted = {};
+  DAG_BRANCH_KEYS.forEach(branch => {
+    branchTotals[branch] = 0;
+    branchCompleted[branch] = 0;
+  });
+  nodes.forEach(node => {
+    const key = (node.branch || '').toUpperCase();
+    if(DAG_BRANCH_KEYS.includes(key)){
+      branchTotals[key] = (branchTotals[key] || 0) + 1;
+    }
+  });
+  DAG_BRANCH_KEYS.forEach(branch => setBranchProgress(branch, 0, branchTotals[branch]));
+
+  const ready = Object.entries(indegree).filter(([,deg]) => deg === 0).map(([id]) => id);
+  if(!ready.length){
+    pipeMsg('No runnable nodes in DAG','err');
+    return;
+  }
 
   setRunStatus('Starting DAG pipeline');
   pipeMsg('Running DAG pipeline','muted');
-  const total = order.length;
+  const total = nodes.length;
   setProgress(0, total);
   let completed = 0;
   const succeeded = new Set();
   const failed = new Set();
+  const scheduled = new Set();
+  let aborted = false;
+  const activePromises = new Set();
 
-  for(const nodeId of order){
+  const recordBranchSuccess = (branchKey) => {
+    if(!branchKey || !branchTotals[branchKey]) return;
+    branchCompleted[branchKey] = Math.min(branchTotals[branchKey], (branchCompleted[branchKey] || 0) + 1);
+    setBranchProgress(branchKey, branchCompleted[branchKey], branchTotals[branchKey]);
+  };
+  const markBranchState = (branchKey, state) => {
+    if(!branchKey || !(branchKey in branchTotals)) return;
+    setBranchProgress(branchKey, branchCompleted[branchKey] || 0, branchTotals[branchKey] || 0, state);
+  };
+
+  const scheduleNode = (nodeId) => {
+    if(aborted || scheduled.has(nodeId) || failed.has(nodeId)) return;
     const node = nodeMap[nodeId];
-    if(!node) continue;
-    const deps = incoming[nodeId] || [];
-    const blocked = deps.some(dep => failed.has(dep));
-    if(blocked){
-      dag.setNodeStatus?.(nodeId,'blocked');
-      continue;
-    }
-    dag.setNodeStatus?.(nodeId,'running');
-    setRunStatus(`Running <b>${esc(node.label)}</b> (${completed+1}/${total})`);
-    const result = await runDagNode(node);
-    if(result.ok){
-      completed++;
-      succeeded.add(nodeId);
-      dag.setNodeStatus?.(nodeId,'done');
-      setProgress(completed, total);
-      const current = window.__SESSION_STATE__?.current || {};
-      dag.recordChannelArtifacts?.(nodeId, current);
-    } else {
-      failed.add(nodeId);
-      dag.setNodeStatus?.(nodeId,'error');
-      pipeMsg(`Node ${node.label} failed: ${result.error || 'see log'}`,'err');
-      setRunStatus(`Failed at <b>${esc(node.label)}</b>`);
-      break;
-    }
+    if(!node) return;
+    scheduled.add(nodeId);
+    const runnerPromise = (async () => {
+      dag.setNodeStatus?.(nodeId,'running');
+      setRunStatus(`Running <b>${esc(node.label)}</b> (${completed+1}/${total})`);
+      const result = await runDagNode(node);
+      if(result.ok){
+        completed++;
+        succeeded.add(nodeId);
+        dag.setNodeStatus?.(nodeId,'done');
+        setProgress(completed, total);
+        const current = window.__SESSION_STATE__?.current || {};
+        dag.recordChannelArtifacts?.(nodeId, current);
+        const branchKey = (node.branch || '').toUpperCase();
+        recordBranchSuccess(branchKey);
+        (dependents[nodeId] || []).forEach(depId => {
+          if(failed.has(depId)) return;
+          indegree[depId] = Math.max(0, (indegree[depId] ?? 0) - 1);
+          if(indegree[depId] === 0){
+            scheduleNode(depId);
+          }
+        });
+      } else {
+        failed.add(nodeId);
+        aborted = true;
+        dag.setNodeStatus?.(nodeId,'error');
+        pipeMsg(`Node ${node.label} failed: ${result.error || 'see log'}`,'err');
+        setRunStatus(`Failed at <b>${esc(node.label)}</b>`);
+        const branchKey = (node.branch || '').toUpperCase();
+        markBranchState(branchKey, 'error');
+      }
+    })();
+    activePromises.add(runnerPromise);
+    runnerPromise.finally(() => activePromises.delete(runnerPromise));
+  };
+
+  ready.forEach(scheduleNode);
+
+  while(activePromises.size){
+    await Promise.all(Array.from(activePromises));
   }
 
   if(failed.size){
-    order.forEach(nodeId => {
-      if(!failed.has(nodeId) && !succeeded.has(nodeId)){
-        const deps = incoming[nodeId] || [];
-        if(deps.some(dep => failed.has(dep))){
-          dag.setNodeStatus?.(nodeId,'blocked');
+    const failedBranches = new Set();
+    nodes.forEach(node => {
+      if(!failed.has(node.id) && !succeeded.has(node.id)){
+        dag.setNodeStatus?.(node.id,'blocked');
+        const branchKey = (node.branch || '').toUpperCase();
+        if(DAG_BRANCH_KEYS.includes(branchKey)){
+          markBranchState(branchKey, 'blocked');
+        }
+      } else if(failed.has(node.id)){
+        const branchKey = (node.branch || '').toUpperCase();
+        if(DAG_BRANCH_KEYS.includes(branchKey)){
+          failedBranches.add(branchKey);
         }
       }
     });
+    failedBranches.forEach(branch => markBranchState(branch, 'error'));
     return;
   }
   pipeMsg('DAG pipeline finished','ok');
@@ -604,5 +917,6 @@ document.addEventListener('DOMContentLoaded', () => {
     $$('.pipe-add').forEach(c=>c.checked=false);
     PIPELINE = [];
     drawFlow(); $('#validation').textContent='—'; pipeMsg('Pipeline cleared');
+    resetBranchProgress();
   });
 });

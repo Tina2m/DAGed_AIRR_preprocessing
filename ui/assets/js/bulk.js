@@ -12,7 +12,7 @@ const STATUS_LABELS = {
   blocked: 'Blocked',
 };
 
-const UNIT_META = {
+const DEFAULT_UNIT_META = {
   filterseq: {
     label: 'FilterSeq quality',
     consumes: ['R1'],
@@ -21,6 +21,9 @@ const UNIT_META = {
     dynamicBranch: true,
     params: [
       { key: 'min_quality', label: 'Quality >=', type: 'number', default: 20, min: 0, max: 50, step: 1 },
+    ],
+    inputs: [
+      { id: 'read', label: 'Input FASTQ', channels: ['R1','R2'] },
     ],
   },
   maskprimers: {
@@ -32,6 +35,9 @@ const UNIT_META = {
     params: [
       { key: 'max_error', label: 'Max error', type: 'number', default: 0.3, min: 0, max: 1, step: 0.05 },
     ],
+    inputs: [
+      { id: 'read', label: 'Input FASTQ', channels: ['R1','R2'] },
+    ],
   },
   pairseq: {
     label: 'PairSeq',
@@ -41,6 +47,11 @@ const UNIT_META = {
     params: [
       { key: 'coordinate', label: 'Coordinate mode', type: 'select', options: ['sra', 'presto'], default: 'sra' },
     ],
+    inputs: [
+      { id: 'read1', label: 'Read 1 FASTQ', channel: 'R1' },
+      { id: 'read2', label: 'Read 2 FASTQ', channel: 'R2' },
+    ],
+    branchTarget: 'MERGED',
   },
   buildcons: {
     label: 'BuildConsensus',
@@ -51,6 +62,9 @@ const UNIT_META = {
     params: [
       { key: 'min_reads', label: 'Min reads', type: 'number', default: 2, min: 1, step: 1 },
     ],
+    inputs: [
+      { id: 'read', label: 'Input FASTQ', channels: ['R1','R2'] },
+    ],
   },
   assemble_pairs: {
     label: 'AssemblePairs sequential',
@@ -60,8 +74,13 @@ const UNIT_META = {
     params: [
       { key: 'aligner', label: 'Aligner', type: 'select', options: ['blastn', 'vsearch'], default: 'blastn' },
     ],
+    inputs: [
+      { id: 'merged', label: 'Merged reads FASTQ', channel: 'MERGED' },
+    ],
+    branchTarget: 'MERGED',
   },
 };
+let UNIT_META = {...DEFAULT_UNIT_META};
 
 const branchLabels = {
   R1: 'Read 1 branch',
@@ -69,10 +88,20 @@ const branchLabels = {
   MERGED: 'Post-merge',
 };
 
-let connectSource = null;
+let NODE_COUNTER = 0;
 
 function randomId(){
   return `node_${Math.random().toString(36).slice(2,8)}`;
+}
+
+function applyUnitMeta(metaMap){
+  if(metaMap && Object.keys(metaMap).length){
+    UNIT_META = metaMap;
+  } else {
+    UNIT_META = {...DEFAULT_UNIT_META};
+  }
+  renderPalette();
+  renderGraph();
 }
 
 function defaultParams(meta){
@@ -119,28 +148,66 @@ function cloneNode(node){
     produces: (node.produces || []).slice(),
     params: {...(node.params || {})},
     status: node.status || 'idle',
+    order: node.order ?? 0,
   };
 }
 
-function addNode(unitId, branch){
+function addNode(unitId, branch, options = {}){
   const meta = UNIT_META[unitId];
-  if(!meta || !meta.branches.includes(branch)) return;
+  if(!meta) return;
+  const targetBranch = branch || meta.branchTarget || meta.branches?.[0] || 'R1';
+  if(!meta.branches?.includes(targetBranch)){
+    meta.branches = Array.from(new Set([...(meta.branches||[]), targetBranch]));
+  }
+  const existingBranchNodes = Object.values(DAG_STATE.nodes).filter(node => node.branch === targetBranch);
   const id = randomId();
-  DAG_STATE.nodes[id] = {
+  const baseParams = defaultParams(meta);
+  const mergedParams = {...baseParams, ...(options.params || {})};
+  const newNode = {
     id,
     unitId,
     label: meta.label,
-    branch,
+    branch: targetBranch,
     consumes: meta.consumes.slice(),
     produces: meta.produces.slice(),
-    params: defaultParams(meta),
+    params: mergedParams,
     incoming: [],
     status: 'idle',
+    selectedInputs: options.inputs || [],
+    order: NODE_COUNTER++,
   };
+  DAG_STATE.nodes[id] = newNode;
+  ensureNodeDefaults(newNode);
+  const previous = existingBranchNodes[existingBranchNodes.length - 1];
+  if(previous){
+    ensureNodeDefaults(previous);
+    connectNodes(previous.id, id);
+  }
   renderGraph();
 }
 
 function removeNode(nodeId){
+  const target = DAG_STATE.nodes[nodeId];
+  let upstream = null;
+  let downstream = null;
+  if(target){
+    const branch = target.branch;
+    const branchIncoming = (target.incoming || [])
+      .map(entry => DAG_STATE.nodes[entry.node])
+      .filter(node => node && node.branch === branch)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    if(branchIncoming.length){
+      upstream = branchIncoming[branchIncoming.length - 1];
+    }
+    const branchOutgoing = DAG_STATE.edges
+      .filter(edge => edge.from === nodeId)
+      .map(edge => DAG_STATE.nodes[edge.to])
+      .filter(node => node && node.branch === branch)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    if(branchOutgoing.length){
+      downstream = branchOutgoing[0];
+    }
+  }
   delete DAG_STATE.nodes[nodeId];
   DAG_STATE.edges = DAG_STATE.edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId);
   Object.values(DAG_STATE.nodes).forEach(node => {
@@ -151,8 +218,10 @@ function removeNode(nodeId){
       delete CHANNEL_ARTIFACTS[channel];
     }
   });
-  if(connectSource === nodeId){
-    connectSource = null;
+  if(upstream && downstream){
+    ensureNodeDefaults(upstream);
+    ensureNodeDefaults(downstream);
+    connectNodes(upstream.id, downstream.id);
   }
   renderGraph();
 }
@@ -316,9 +385,6 @@ function renderGraph(){
     if(mergeInputs){
       card.classList.add('merge-node');
     }
-    if(connectSource === node.id){
-      card.classList.add('connecting');
-    }
     const status = node.status || 'idle';
     card.classList.add(`status-${status}`);
 
@@ -336,32 +402,17 @@ function renderGraph(){
     statusBadge.textContent = STATUS_LABELS[status] || status;
     card.appendChild(statusBadge);
 
-    if(meta.branches && meta.branches.length > 1){
+    if(meta.branches && meta.branches.length){
       const branchWrap = document.createElement('div');
       branchWrap.className = 'node-meta';
       const branchLabel = document.createElement('span');
       branchLabel.textContent = 'Branch';
-      const branchSelect = document.createElement('select');
-      branchSelect.className = 'branch-select';
-      meta.branches.forEach(branch => {
-        const option = document.createElement('option');
-        option.value = branch;
-        option.textContent = branch;
-        branchSelect.appendChild(option);
-      });
-      branchSelect.value = node.branch;
-      branchSelect.addEventListener('change', e => {
-        node.branch = e.target.value;
-        renderGraph();
-      });
+      const branchValue = document.createElement('span');
+      branchValue.className = 'branch-value';
+      branchValue.textContent = node.branch || meta.branches[0];
       branchWrap.appendChild(branchLabel);
-      branchWrap.appendChild(branchSelect);
+      branchWrap.appendChild(branchValue);
       card.appendChild(branchWrap);
-    }
-
-    const paramsSection = buildParamSection(node, meta);
-    if(paramsSection){
-      card.appendChild(paramsSection);
     }
 
     const channels = document.createElement('div');
@@ -393,15 +444,10 @@ function renderGraph(){
 
     const actions = document.createElement('div');
     actions.className = 'node-actions';
-    const connectBtn = document.createElement('button');
-    connectBtn.className = 'connect-btn';
-    connectBtn.textContent = connectSource === node.id ? 'Pick target...' : 'Connect';
-    connectBtn.addEventListener('click', () => toggleConnect(node.id));
     const removeBtn = document.createElement('button');
     removeBtn.className = 'remove-btn';
     removeBtn.textContent = 'Remove';
     removeBtn.addEventListener('click', () => removeNode(node.id));
-    actions.appendChild(connectBtn);
     actions.appendChild(removeBtn);
     card.appendChild(actions);
 
@@ -412,23 +458,40 @@ function renderGraph(){
   renderEdges();
 }
 
-function toggleConnect(nodeId){
-  if(connectSource === nodeId){
-    connectSource = null;
-    renderGraph();
-    return;
+function branchSequence(branch){
+  const branchNodes = Object.values(DAG_STATE.nodes)
+    .filter(node => node.branch === branch)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  if(branchNodes.length === 0){
+    return [];
   }
-  if(!connectSource){
-    connectSource = nodeId;
-    renderGraph();
-    return;
+  const branchEdges = DAG_STATE.edges.filter(edge => {
+    const fromNode = DAG_STATE.nodes[edge.from];
+    const toNode = DAG_STATE.nodes[edge.to];
+    return fromNode?.branch === branch && toNode?.branch === branch;
+  });
+  if(branchEdges.length === 0){
+    return branchNodes;
   }
-  const source = connectSource;
-  const ok = connectNodes(source, nodeId);
-  if(ok){
-    connectSource = null;
-    renderGraph();
+  const incomingCount = {};
+  branchNodes.forEach(node => incomingCount[node.id] = 0);
+  branchEdges.forEach(edge => {
+    if(incomingCount[edge.to] !== undefined){
+      incomingCount[edge.to]++;
+    }
+  });
+  let current = branchNodes.find(node => incomingCount[node.id] === 0) || branchNodes[0];
+  const visited = new Set();
+  const sequence = [];
+  while(current && !visited.has(current.id)){
+    sequence.push(current);
+    visited.add(current.id);
+    const nextEdge = branchEdges.find(edge => edge.from === current.id);
+    current = (nextEdge && DAG_STATE.nodes[nextEdge.to]) || null;
   }
+  const leftovers = branchNodes.filter(node => !visited.has(node.id));
+  leftovers.forEach(node => sequence.push(node));
+  return sequence;
 }
 
 function renderEdges(){
@@ -440,34 +503,20 @@ function renderEdges(){
   connHeader.textContent = 'Connections';
   out.appendChild(connHeader);
 
-  if(DAG_STATE.edges.length === 0){
-    const none = document.createElement('div');
-    none.className = 'muted';
-    none.textContent = 'No connections yet';
-    out.appendChild(none);
-  } else {
-    DAG_STATE.edges.forEach(edge => {
-      const row = document.createElement('div');
-      row.className = 'edge-row';
-      const left = document.createElement('span');
-      const from = DAG_STATE.nodes[edge.from]?.label || edge.from;
-      const to = DAG_STATE.nodes[edge.to]?.label || edge.to;
-      left.textContent = `${from} -> ${to}`;
-      const right = document.createElement('span');
-      right.className = 'edge-meta';
-      const ch = document.createElement('span');
-      ch.textContent = edge.channels.join(', ');
-      const btn = document.createElement('button');
-      btn.className = 'edge-remove';
-      btn.textContent = 'Remove';
-      btn.addEventListener('click', () => removeEdge(edge.from, edge.to));
-      right.appendChild(ch);
-      right.appendChild(btn);
-      row.appendChild(left);
-      row.appendChild(right);
-      out.appendChild(row);
-    });
-  }
+  ['R1', 'R2'].forEach(branch => {
+    const row = document.createElement('div');
+    row.className = 'edge-row branch-summary';
+    const label = document.createElement('span');
+    label.className = 'edge-branch-label';
+    label.textContent = branchLabels[branch] || branch;
+    const summarySpan = document.createElement('span');
+    summarySpan.className = 'edge-branch-summary';
+    const sequence = branchSequence(branch).map(node => node.label);
+    summarySpan.textContent = sequence.length ? sequence.join(' -> ') : 'No nodes';
+    row.appendChild(label);
+    row.appendChild(summarySpan);
+    out.appendChild(row);
+  });
 
   const artHeader = document.createElement('h4');
   artHeader.textContent = 'Artifacts by channel';
@@ -566,6 +615,9 @@ window.BulkDag = {
   resetStatuses,
   recordChannelArtifacts,
   getChannelArtifacts: () => ({...CHANNEL_ARTIFACTS}),
+  loadUnitMeta: applyUnitMeta,
+  createNode: (unitId, branch, opts) => addNode(unitId, branch, opts),
+  getUnitMeta: id => UNIT_META[id] ? {...UNIT_META[id]} : null,
 };
 
 function setupModeToggle(){

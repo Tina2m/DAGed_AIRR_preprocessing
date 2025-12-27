@@ -9,47 +9,62 @@ const $$ = sel => document.querySelectorAll(sel);
 const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 // ----- Session (auto) -----
-async function ensureSession(){
-  if(SID) return SID;
-  const r = await fetch('/session/start',{method:'POST'});
-  const j = await r.json();
-  SID = j.session_id;
-  window.__SID__ = SID;      // keep accessible, not visible
+async function ensureSession() {
+  if (SID) {
+    return SID;
+  }
+  const response = await fetch('/session/start', { method: 'POST' });
+  const data = await response.json();
+  SID = data.session_id;
+  window.__SID__ = SID; // keep accessible, not visible
   await refreshState();
   return SID;
 }
 
 // ----- Upload -----
-async function uploadSCFiles(){
+async function uploadSCFiles() {
   await ensureSession();
   const files = $('#sc-files').files;
-  if(!files || !files.length){ alert('Choose at least one file'); return; }
-  $('#upload-msg').textContent = `Uploading ${files.length} file(s)…`;
-  let ok = 0;
-  for(const f of files){
-    const fd = new FormData();
-    fd.append('file', f);
-    fd.append('name', f.name);
-    const r = await fetch(`/session/${SID}/upload-aux`, {method:'POST', body:fd});
-    if(r.ok) ok++;
+  if (!files || !files.length) {
+    alert('Choose at least one file');
+    return;
   }
-  $('#upload-msg').textContent = `Uploaded ${ok}/${files.length} files.`;
+  $('#upload-msg').textContent = `Uploading ${files.length} file(s)…`;
+  let successCount = 0;
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('name', file.name);
+    const response = await fetch(`/session/${SID}/upload-aux`, {
+      method: 'POST',
+      body: formData
+    });
+    if (response.ok) {
+      successCount++;
+    }
+  }
+  $('#upload-msg').textContent = `Uploaded ${successCount}/${files.length} files.`;
   listUploaded(files);
   await refreshState();
 }
-function listUploaded(fileList){
-  const names = Array.from(fileList).map(f => esc(f.name));
+function listUploaded(fileList) {
+  const names = Array.from(fileList).map(file => esc(file.name));
   $('#uploaded-list').innerHTML = names.length ? 'Uploaded: ' + names.join(', ') : '';
 }
 
 // ----- Units rendering (grouped) -----
 const GROUPS = [
-  { id:'merge',    title:'I/O & Merge',       match:u => (u.id||'').includes('merge') },
-  { id:'qc',       title:'QC & Filtering',    match:u => /(filter|remove)/.test(u.id||'') },
-  { id:'other',    title:'Other',             match:u => true }
+  { id: 'merge', title: 'I/O & Merge', match: unit => (unit.id || '').includes('merge') },
+  { id: 'qc', title: 'QC & Filtering', match: unit => /(filter|remove)/.test(unit.id || '') },
+  { id: 'other', title: 'Other', match: unit => true }
 ];
-function groupOf(u){
-  for(const g of GROUPS){ if(g.match(u)) return g.id; }
+
+function groupOf(unit) {
+  for (const group of GROUPS) {
+    if (group.match(unit)) {
+      return group.id;
+    }
+  }
   return 'other';
 }
 function renderGroups(units){
@@ -184,20 +199,26 @@ function collectParams(card){
   return params;
 }
 
-async function renderUnits(){
+async function renderUnits() {
   await ensureSession();
-  let all = [];
+  let allUnits = [];
   try {
-    const res = await fetch(`/session/${SID}/units?group=sc`);
-    all = await res.json();
-  } catch (e) {
+    const response = await fetch(`/session/${SID}/units?group=sc`);
+    allUnits = await response.json();
+  } catch (error) {
     try {
-      const res2 = await fetch(`/session/${SID}/units`);
-      all = await res2.json();
-    } catch (e2) { all = []; }
+      const response2 = await fetch(`/session/${SID}/units`);
+      allUnits = await response2.json();
+    } catch (error2) {
+      allUnits = [];
+    }
   }
   // filter SC
-  UNITS_META = (all || []).filter(u => (u.group && u.group==='sc') || (u.id||'').startsWith('sc_') || (u.label||'').toLowerCase().startsWith('sc:'));
+  UNITS_META = (allUnits || []).filter(unit =>
+    (unit.group && unit.group === 'sc') ||
+    (unit.id || '').startsWith('sc_') ||
+    (unit.label || '').toLowerCase().startsWith('sc:')
+  );
   renderGroups(UNITS_META);
 }
 
@@ -225,83 +246,93 @@ function applySearch(){
 }
 
 // Expand / Collapse all
-function expandAll(){ $$('.unit-group').forEach(g=>g.classList.add('open')); }
-function collapseAll(){ $$('.unit-group').forEach(g=>g.classList.remove('open')); }
+function expandAll() {
+  $$('.unit-group').forEach(group => group.classList.add('open'));
+}
+
+function collapseAll() {
+  $$('.unit-group').forEach(group => group.classList.remove('open'));
+}
 
 // ----- Flow builder -----
-function addToFlow(card, unitId, label){
+function addToFlow(card, unitId, label) {
   const params = collectParams(card);
-  FLOW.push({unitId, label, params});
+  FLOW.push({ unitId, label, params });
   renderFlow();
 }
-function removeFromFlow(idx){
-  FLOW.splice(idx,1);
+
+function removeFromFlow(index) {
+  FLOW.splice(index, 1);
   renderFlow();
 }
-function renderFlow(){
-  const ul = $('#flow'); ul.innerHTML = '';
-  if(FLOW.length === 0){
-    ul.innerHTML = '<li class="muted">No steps yet. Use “Add to flow”.</li>';
+function renderFlow() {
+  const flowList = $('#flow');
+  flowList.innerHTML = '';
+  if (FLOW.length === 0) {
+    flowList.innerHTML = '<li class="muted">No steps yet. Use "Add to flow".</li>';
   } else {
-    FLOW.forEach((s,i)=>{
-      const li = document.createElement('li');
-      li.className = 'flow-item';
-      li.innerHTML = `<div class="flow-step">${i+1}</div>
-                      <div class="flow-label">${esc(s.label)} <span class="muted">(${esc(s.unitId)})</span></div>
-                      <button class="flow-remove" title="Remove">✕</button>`;
-      li.querySelector('.flow-remove').addEventListener('click', ()=>removeFromFlow(i));
-      ul.appendChild(li);
+    FLOW.forEach((step, index) => {
+      const listItem = document.createElement('li');
+      listItem.className = 'flow-item';
+      listItem.innerHTML = `<div class="flow-step">${index + 1}</div>
+                            <div class="flow-label">${esc(step.label)} <span class="muted">(${esc(step.unitId)})</span></div>
+                            <button class="flow-remove" title="Remove">✕</button>`;
+      listItem.querySelector('.flow-remove').addEventListener('click', () => removeFromFlow(index));
+      flowList.appendChild(listItem);
     });
   }
   $('#validation').innerHTML = '—';
 }
 
 // ----- Validation & run -----
-function validateFlow(){
-  if(FLOW.length === 0){
-    $('#validation').innerHTML = `<span class="pill err">Empty flow</span> Add steps with “Add to flow”.`;
-    return {ok:false, msgs:['Empty flow']};
+function validateFlow() {
+  if (FLOW.length === 0) {
+    $('#validation').innerHTML = `<span class="pill err">Empty flow</span> Add steps with "Add to flow".`;
+    return { ok: false, msgs: ['Empty flow'] };
   }
-  const msgs = [];
-  let ok = true;
+  const messages = [];
+  let isValid = true;
 
-  const idxMerge = FLOW.findIndex(s=>s.unitId==='sc_merge_samples');
-  if(idxMerge > 0){
-    msgs.push('Suggestion: Place “SC: Merge samples” first for efficiency (optional).');
-  }
-
-  const idxMH = FLOW.findIndex(s=>s.unitId==='sc_remove_multi_heavy');
-  const idxNH = FLOW.findIndex(s=>s.unitId==='sc_remove_no_heavy');
-  if(idxMH !== -1 && idxNH !== -1 && idxMH > idxNH){
-    msgs.push('Suggestion: Run “Remove multi heavy” before “Remove no heavy” (optional).');
+  const mergeIndex = FLOW.findIndex(step => step.unitId === 'sc_merge_samples');
+  if (mergeIndex > 0) {
+    messages.push('Suggestion: Place "SC: Merge samples" first for efficiency (optional).');
   }
 
-  const nonSC = FLOW.filter(s=>!s.unitId.startsWith('sc_'));
-  if(nonSC.length){
-    ok = false;
-    msgs.push('Invalid step detected (non single-cell unit). Please remove it.');
+  const multiHeavyIndex = FLOW.findIndex(step => step.unitId === 'sc_remove_multi_heavy');
+  const noHeavyIndex = FLOW.findIndex(step => step.unitId === 'sc_remove_no_heavy');
+  if (multiHeavyIndex !== -1 && noHeavyIndex !== -1 && multiHeavyIndex > noHeavyIndex) {
+    messages.push('Suggestion: Run "Remove multi heavy" before "Remove no heavy" (optional).');
   }
 
-  const head = ok ? '<span class="pill ok">Looks good</span>' : '<span class="pill err">Problems found</span>';
-  $('#validation').innerHTML = head + (msgs.length? ('<div class="mt8">'+msgs.map(esc).join('<br>')+'</div>') : '');
-  return {ok, msgs};
+  const nonSC = FLOW.filter(step => !step.unitId.startsWith('sc_'));
+  if (nonSC.length) {
+    isValid = false;
+    messages.push('Invalid step detected (non single-cell unit). Please remove it.');
+  }
+
+  const header = isValid ? '<span class="pill ok">Looks good</span>' : '<span class="pill err">Problems found</span>';
+  $('#validation').innerHTML = header + (messages.length ?
+    ('<div class="mt8">' + messages.map(esc).join('<br>') + '</div>') : '');
+  return { ok: isValid, msgs: messages };
 }
 
-async function runFlow(){
-  if(running) return;
-  const v = validateFlow();
-  if(!v.ok){
+async function runFlow() {
+  if (running) {
+    return;
+  }
+  const validation = validateFlow();
+  if (!validation.ok) {
     alert('Please fix flow issues and try again.');
     return;
   }
   running = true;
   $('#pstate').textContent = `starting (${FLOW.length} steps)…`;
-  for(let i=0;i<FLOW.length;i++){
-    const s = FLOW[i];
-    $('#pstate').textContent = `running step ${i+1}/${FLOW.length}: ${s.label}`;
-    const ok = await runUnit(s);
-    if(!ok){
-      $('#pstate').textContent = `failed at step ${i+1}: ${s.label}`;
+  for (let index = 0; index < FLOW.length; index++) {
+    const step = FLOW[index];
+    $('#pstate').textContent = `running step ${index + 1}/${FLOW.length}: ${step.label}`;
+    const success = await runUnit(step);
+    if (!success) {
+      $('#pstate').textContent = `failed at step ${index + 1}: ${step.label}`;
       running = false;
       return;
     }
@@ -337,16 +368,20 @@ async function runUnit(step){
 }
 
 // ----- State / artifacts -----
-async function refreshState(){
-  if(!SID) return;
-  const r = await fetch(`/session/${SID}/state`);
-  const s = await r.json();
-  const chips = Object.entries(s.current||{}).map(([k,v]) => `<span class="pill">${esc(k)}: ${esc(v)}</span>`).join(' ');
+async function refreshState() {
+  if (!SID) {
+    return;
+  }
+  const response = await fetch(`/session/${SID}/state`);
+  const state = await response.json();
+  const chips = Object.entries(state.current || {}).map(([key, value]) =>
+    `<span class="pill">${esc(key)}: ${esc(value)}</span>`
+  ).join(' ');
   $('#statebox').innerHTML = chips || '<span class="muted">no state</span>';
-  const arts = Object.values(s.artifacts||{}).map(a =>
-    `<div>${esc(a.name)} — <a href="/session/${SID}/download/${encodeURIComponent(a.name)}">download</a></div>`
+  const artifacts = Object.values(state.artifacts || {}).map(artifact =>
+    `<div>${esc(artifact.name)} — <a href="/session/${SID}/download/${encodeURIComponent(artifact.name)}">download</a></div>`
   ).join('');
-  $('#arts').innerHTML = arts || '<span class="muted">none</span>';
+  $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
 }
 
 // ----- Init -----

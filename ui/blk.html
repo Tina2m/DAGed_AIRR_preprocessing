@@ -31,7 +31,7 @@
     code{background:#f3f4f6;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
     .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1400px;margin:0 auto}
     .left{flex:0 0 33%;max-width:33%;min-width:0}
-    .right{flex:0 0 67%;max-width:67%;position:sticky;top:12px;align-self:flex-start}
+.right{flex:0 0 67%;max-width:67%;position:sticky;top:12px;align-self:flex-start;max-height:calc(100vh - 24px);overflow:auto}
     .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
     h1{margin:0 0 12px 0;font-size:22px;letter-spacing:.2px}
     h2{margin:14px 0 10px 0;font-size:18px}
@@ -113,14 +113,6 @@
         </div>
         <div id="unit-groups" class="unit-groups"></div>
 
-        <div class="dag-only palette-section">
-          <h2>Paired-end node palette</h2>
-          <p class="muted">Add units to R1/R2 branches before wiring them on the builder panel.</p>
-          <div class="panel palette-panel">
-            <div id="bulk-palette" class="palette-list"></div>
-          </div>
-        </div>
-
         <h2>3) Run pipeline</h2>
         <p class="muted">Use the panel on the right to choose single-end (linear) or paired-end (DAG) layout, then run from here.</p>
         <div class="row mb8">
@@ -184,6 +176,18 @@
         <h3 class="mt8">Run status</h3>
         <div id="run-status" class="muted">—</div>
         <div class="progress"><div id="run-bar" class="bar"></div></div>
+        <div class="branch-progress dag-only">
+          <div class="branch-progress-row" data-branch="R1">
+            <div class="branch-progress-label">R1</div>
+            <div class="progress branch-progress-bar"><div id="branch-bar-R1" class="bar"></div></div>
+            <span id="branch-status-R1" class="branch-progress-status">No nodes</span>
+          </div>
+          <div class="branch-progress-row" data-branch="R2">
+            <div class="branch-progress-label">R2</div>
+            <div class="progress branch-progress-bar"><div id="branch-bar-R2" class="bar"></div></div>
+            <span id="branch-status-R2" class="branch-progress-status">No nodes</span>
+          </div>
+        </div>
       </div>
     </aside>
   </div>
