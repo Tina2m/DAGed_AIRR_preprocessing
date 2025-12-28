@@ -388,6 +388,8 @@ function renderGraph(){
     const status = node.status || 'idle';
     card.classList.add(`status-${status}`);
 
+    const head = document.createElement('div');
+    head.className = 'node-head';
     const title = document.createElement('div');
     title.className = 'node-title';
     title.textContent = node.label;
@@ -395,61 +397,20 @@ function renderGraph(){
     idSpan.className = 'node-id muted';
     idSpan.textContent = ` (${node.id})`;
     title.appendChild(idSpan);
-    card.appendChild(title);
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'node-close';
+    removeBtn.setAttribute('aria-label', `Remove ${node.label}`);
+    removeBtn.innerHTML = '&times;';
+    removeBtn.addEventListener('click', () => removeNode(node.id));
+    head.appendChild(title);
+    head.appendChild(removeBtn);
+    card.appendChild(head);
 
     const statusBadge = document.createElement('div');
     statusBadge.className = `status-badge status-${status}`;
     statusBadge.textContent = STATUS_LABELS[status] || status;
     card.appendChild(statusBadge);
-
-    if(meta.branches && meta.branches.length){
-      const branchWrap = document.createElement('div');
-      branchWrap.className = 'node-meta';
-      const branchLabel = document.createElement('span');
-      branchLabel.textContent = 'Branch';
-      const branchValue = document.createElement('span');
-      branchValue.className = 'branch-value';
-      branchValue.textContent = node.branch || meta.branches[0];
-      branchWrap.appendChild(branchLabel);
-      branchWrap.appendChild(branchValue);
-      card.appendChild(branchWrap);
-    }
-
-    const channels = document.createElement('div');
-    channels.className = 'channels';
-    const inRow = document.createElement('div');
-    inRow.textContent = `In: ${node.consumes.join(', ') || '-'}`;
-    const outRow = document.createElement('div');
-    outRow.textContent = `Out: ${node.produces.join(', ') || '-'}`;
-    const incomingRow = document.createElement('div');
-    incomingRow.className = 'incoming-row';
-    incomingRow.textContent = 'Incoming: ';
-    if(node.incoming.length){
-      node.incoming.forEach(entry => {
-        const badge = document.createElement('span');
-        badge.className = 'channel-badge';
-        badge.textContent = `${entry.label} (${entry.channels.join(', ')})`;
-        incomingRow.appendChild(badge);
-      });
-    } else {
-      const none = document.createElement('span');
-      none.className = 'muted';
-      none.textContent = 'none';
-      incomingRow.appendChild(none);
-    }
-    channels.appendChild(inRow);
-    channels.appendChild(outRow);
-    channels.appendChild(incomingRow);
-    card.appendChild(channels);
-
-    const actions = document.createElement('div');
-    actions.className = 'node-actions';
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'remove-btn';
-    removeBtn.textContent = 'Remove';
-    removeBtn.addEventListener('click', () => removeNode(node.id));
-    actions.appendChild(removeBtn);
-    card.appendChild(actions);
 
     const bucket = cols[node.branch] || cols.MERGED;
     bucket?.appendChild(card);
