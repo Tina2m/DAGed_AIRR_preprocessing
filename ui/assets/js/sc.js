@@ -124,7 +124,7 @@ function buildUnitCard(u){
       <div class="params-wrap">${paramsHTML || '<div class="muted">No parameters</div>'}</div>
       <div class="row mt8">
         <button class="run">Run</button>
-        <button class="secondary addflow">Add to flow</button>
+        <button class="secondary addflow">Add to pipeline</button>
       </div>
     </div>`;
 
@@ -269,7 +269,7 @@ function renderFlow() {
   const flowList = $('#flow');
   flowList.innerHTML = '';
   if (FLOW.length === 0) {
-    flowList.innerHTML = '<li class="muted">No steps yet. Use "Add to flow".</li>';
+    flowList.innerHTML = '<li class="muted">No steps yet. Use "Add to pipeline".</li>';
   } else {
     FLOW.forEach((step, index) => {
       const listItem = document.createElement('li');
@@ -287,7 +287,7 @@ function renderFlow() {
 // ----- Validation & run -----
 function validateFlow() {
   if (FLOW.length === 0) {
-    $('#validation').innerHTML = `<span class="pill err">Empty flow</span> Add steps with "Add to flow".`;
+    $('#validation').innerHTML = `<span class="pill err">Empty flow</span> Add steps with "Add to pipeline".`;
     return { ok: false, msgs: ['Empty flow'] };
   }
   const messages = [];

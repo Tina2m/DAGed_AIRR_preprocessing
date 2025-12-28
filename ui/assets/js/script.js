@@ -47,9 +47,22 @@ function unitCategory(id) {
 }
 
 function selectedSteps() {
-  // Return pipeline in click order, but drop items whose checkbox is no longer checked
-  PIPELINE = PIPELINE.filter(step => step.card && step.card.querySelector('.pipe-add')?.checked);
+  // Return pipeline in click order, but drop items whose add-to-pipeline button is no longer active
+  PIPELINE = PIPELINE.filter(step => step.card && isPipeAddActive(step.card));
   return [...PIPELINE];
+}
+
+function isPipeAddActive(card){
+  const btn = card?.querySelector('.pipe-add');
+  return !!(btn && btn.classList.contains('active'));
+}
+
+function setPipeAddState(btn, active){
+  if(!btn) return;
+  btn.classList.toggle('active', !!active);
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  btn.dataset.active = active ? '1' : '0';
+  btn.title = active ? 'Click to remove from pipeline' : 'Click to add to pipeline';
 }
 
 function drawFlow() {
@@ -206,9 +219,6 @@ function collectParams(card) {
       return;
     }
     if (element.type === 'file') {
-      return;
-    }
-    if (element.classList.contains('pipe-add')) {
       return;
     }
     params[element.name] = (element.type === 'checkbox') ?
@@ -478,21 +488,22 @@ function makeUnitCard(u){
     ${paramsHTML}
     <div class="actions">
       <button class="run">Run</button>
-      <label class="row"><input type="checkbox" class="pipe-add" data-unit-id="${esc(u.id)}"> Add to pipeline</label>
+      <button type="button" class="secondary pipe-add" data-unit-id="${esc(u.id)}" aria-pressed="false">Add to pipeline</button>
     </div>`;
 
   card.querySelector('.run').addEventListener('click', ()=>runUnit(card,u.id));
-  const chk = card.querySelector('.pipe-add');
-  chk.addEventListener('change', () => {
-    const unitId = chk.dataset.unitId || card.dataset.unit;
+  const btn = card.querySelector('.pipe-add');
+  setPipeAddState(btn, false);
+  btn.addEventListener('click', () => {
+    const unitId = btn.dataset.unitId || card.dataset.unit;
     const meta = UNITS_META.find(m => m.id === unitId) || {};
     const label = meta.label || unitId;
 
-    if (chk.checked) {
-      PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
+    const shouldAdd = !btn.classList.contains('active');
+    setPipeAddState(btn, shouldAdd);
+    PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
+    if (shouldAdd) {
       PIPELINE.push({unit: unitId, label, card});
-    } else {
-      PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
     }
     drawFlow();
   });
@@ -914,7 +925,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#pipe-validate')?.addEventListener('click', validatePipeline);
   $('#pipe-run')?.addEventListener('click', runPipeline);
   $('#pipe-clear')?.addEventListener('click', ()=>{
-    $$('.pipe-add').forEach(c=>c.checked=false);
+    $$('.pipe-add').forEach(btn=>setPipeAddState(btn, false));
     PIPELINE = [];
     drawFlow(); $('#validation').textContent='—'; pipeMsg('Pipeline cleared');
     resetBranchProgress();
