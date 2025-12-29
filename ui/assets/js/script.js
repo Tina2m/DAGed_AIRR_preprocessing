@@ -497,7 +497,6 @@ function makeUnitCard(u){
   card.className = 'unit-card';
   card.dataset.unit = u.id;
 
-  const requires = (u.requires||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ') || '<span class="muted">none</span>';
   let paramsHTML = '<div class="params-body no-params">No parameters</div>';
   if (u.params_schema && Object.keys(u.params_schema).length){
     let inner = '';
@@ -526,10 +525,9 @@ function makeUnitCard(u){
   card.innerHTML = `
     <div class="card-head">
       <h3>${esc(u.label)}</h3>
-      <div class="requires">Requires: ${requires}</div>
     </div>
     ${paramsHTML}
-    <div class="card-actions">
+    <div class="card-actions row">
       <button class="run">Run</button>
       <button type="button" class="secondary pipe-add" data-unit-id="${esc(u.id)}" aria-pressed="false">Add to pipeline</button>
     </div>`;

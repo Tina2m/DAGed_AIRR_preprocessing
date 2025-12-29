@@ -7,6 +7,11 @@ let running = false;
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const formatUnitLabel = label => {
+  const raw = (label ?? '').toString();
+  const cleaned = raw.replace(/^sc:\s*/i, '').trimStart();
+  return cleaned || raw.trim() || raw;
+};
 
 // ----- Session (auto) -----
 async function ensureSession() {
@@ -98,8 +103,9 @@ function buildUnitCard(u){
   const card = document.createElement('div');
   card.className = 'unit-card';
   card.dataset.unit = u.id;
-
-  const requires = (u.requires||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join(' ') || '<span class="muted">none</span>';
+  const requiresText = (u.requires || []).join(' ');
+  card.dataset.requires = requiresText.toLowerCase();
+  const displayLabel = formatUnitLabel(u.label || u.id || '');
   let paramsHTML = '';
   for (const [k,v] of Object.entries(u.params_schema||{})) {
     const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
@@ -116,8 +122,7 @@ function buildUnitCard(u){
 
   card.innerHTML = `
     <div class="uc-head">
-      <div class="uc-title">${esc(u.label)}</div>
-      <div class="req">requires: ${requires}</div>
+      <div class="uc-title">${esc(displayLabel)}</div>
       <button class="params-toggle" title="Show/Hide parameters">Parameters</button>
     </div>
     <div class="params">
@@ -133,8 +138,8 @@ function buildUnitCard(u){
   card.querySelector('.params-toggle').addEventListener('click', ()=>{
     pwrap.classList.toggle('open');
   });
-  card.querySelector('.run').addEventListener('click', ()=>runSingle(card, u.id, u.label));
-  card.querySelector('.addflow').addEventListener('click', ()=>addToFlow(card, u.id, u.label));
+  card.querySelector('.run').addEventListener('click', ()=>runSingle(card, u.id, displayLabel));
+  card.querySelector('.addflow').addEventListener('click', ()=>addToFlow(card, u.id, displayLabel));
 
   if(u.id === 'sc_remove_multi_heavy'){
     decorateMultiHeavyCard(card);
@@ -151,12 +156,12 @@ function decorateMultiHeavyCard(card){
     bcr: {
       label: 'BCR',
       values: ['IGH','IGK','IGL','IGH,IGK','IGH,IGL'],
-      title: 'SC: Remove cells with multiple IgH',
+      title: 'Remove cells with multiple IgH',
     },
     tcr: {
       label: 'TCR',
       values: ['TRA','TRB','TRA,TRB'],
-      title: 'SC: Remove cells with multiple TRA/TRB',
+      title: 'Remove cells with multiple TRA/TRB',
     },
   };
 
@@ -231,7 +236,7 @@ function applySearch(){
   cards.forEach(c => {
     const unitId = (c.dataset.unit||'').toLowerCase();
     const title = (c.querySelector('.uc-title')?.textContent||'').toLowerCase();
-    const req = (c.querySelector('.req')?.textContent||'').toLowerCase();
+    const req = (c.dataset.requires || '').toLowerCase();
     const hay = [unitId,title,req].join(' ');
     const hit = !q || hay.includes(q);
     c.style.display = hit ? '' : 'none';
@@ -295,7 +300,7 @@ function validateFlow() {
 
   const mergeIndex = FLOW.findIndex(step => step.unitId === 'sc_merge_samples');
   if (mergeIndex > 0) {
-    messages.push('Suggestion: Place "SC: Merge samples" first for efficiency (optional).');
+    messages.push('Suggestion: Place "Merge samples" first for efficiency (optional).');
   }
 
   const multiHeavyIndex = FLOW.findIndex(step => step.unitId === 'sc_remove_multi_heavy');
