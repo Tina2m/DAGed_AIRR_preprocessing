@@ -1,7 +1,8 @@
 // Enhanced UI logic with right-side pipeline panel and click-ordered pipeline.
 let SID = null;
 let UNITS_META = [];
-let PIPELINE = []; // keeps {unit, label, card} in the order of user clicks
+let PIPELINE = []; // keeps {id, unit, label, card, params} in the order of user clicks
+let PIPELINE_SEQ = 0; // simple counter for unique pipeline entries
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -47,22 +48,17 @@ function unitCategory(id) {
 }
 
 function selectedSteps() {
-  // Return pipeline in click order, but drop items whose add-to-pipeline button is no longer active
-  PIPELINE = PIPELINE.filter(step => step.card && isPipeAddActive(step.card));
+  // Return pipeline in click order, but drop items whose cards are no longer on the page
+  PIPELINE = PIPELINE.filter(step => step.card && step.card.isConnected);
   return [...PIPELINE];
 }
 
-function isPipeAddActive(card){
-  const btn = card?.querySelector('.pipe-add');
-  return !!(btn && btn.classList.contains('active'));
-}
-
-function setPipeAddState(btn, active){
-  if(!btn) return;
-  btn.classList.toggle('active', !!active);
-  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-  btn.dataset.active = active ? '1' : '0';
-  btn.title = active ? 'Click to remove from pipeline' : 'Click to add to pipeline';
+function removePipelineStep(stepId){
+  const before = PIPELINE.length;
+  PIPELINE = PIPELINE.filter(step => step.id !== stepId);
+  if(PIPELINE.length !== before){
+    drawFlow();
+  }
 }
 
 function drawFlow() {
@@ -76,7 +72,18 @@ function drawFlow() {
   steps.forEach((step, index) => {
     const node = document.createElement('div');
     node.className = 'node';
-    node.textContent = step.label;
+    const label = document.createElement('span');
+    label.className = 'node-label';
+    label.textContent = `${index + 1}. ${step.label}`;
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'node-remove';
+    removeBtn.title = 'Remove from pipeline';
+    removeBtn.setAttribute('aria-label', `Remove ${step.label} from pipeline`);
+    removeBtn.textContent = 'x';
+    removeBtn.addEventListener('click', () => removePipelineStep(step.id));
+    node.appendChild(label);
+    node.appendChild(removeBtn);
     flow.appendChild(node);
     if (index < steps.length - 1) {
       const arrow = document.createElement('div');
@@ -100,6 +107,18 @@ function setRunStatus(text) {
 function setProgress(current, total) {
   const percentage = total ? Math.round((current / total) * 100) : 0;
   $('#run-bar').style.width = percentage + '%';
+}
+
+function setUploadReadsStatus(text, tone = 'info') {
+  const out = $('#upload-out');
+  if (!out) {
+    return;
+  }
+  out.textContent = text || '';
+  ['ok', 'warn', 'err'].forEach(cls => out.classList.remove(cls));
+  if (tone && tone !== 'info') {
+    out.classList.add(tone);
+  }
 }
 function setBranchProgress(branch, completed, total, state){
   const key = (branch || '').toUpperCase();
@@ -144,6 +163,7 @@ async function startSession() {
   SID = data.session_id;
   $('#sid').textContent = SID;
   PIPELINE = []; // reset
+  PIPELINE_SEQ = 0;
   await renderUnits();
   drawFlow();
   await refreshState();
@@ -151,12 +171,14 @@ async function startSession() {
   setRunStatus('—');
   setProgress(0, 1);
   resetBranchProgress();
+  setUploadReadsStatus('', 'info');
 }
 
 async function uploadReads() {
   const r1File = $('#r1f').files[0];
   if (!r1File) {
     alert('Choose R1');
+    setUploadReadsStatus('Select an R1 FASTQ first.', 'warn');
     return;
   }
   const formData = new FormData();
@@ -165,15 +187,34 @@ async function uploadReads() {
   if (r2File) {
     formData.append('r2', r2File);
   }
-  const response = await fetch(`/session/${SID}/upload`, {
-    method: 'POST',
-    body: formData
-  });
-  if (!response.ok) {
-    alert('Upload failed');
-    return;
+  setUploadReadsStatus('Uploading...', 'info');
+  try {
+    const response = await fetch(`/session/${SID}/upload`, {
+      method: 'POST',
+      body: formData
+    });
+    if (!response.ok) {
+      let errorText = response.statusText || 'Upload failed';
+      try {
+        const errData = await response.json();
+        errorText = errData?.detail?.error || errData?.detail || errorText;
+      } catch (err) {
+        // response not JSON; ignore
+      }
+      throw new Error(errorText);
+    }
+    await refreshState();
+    const files = [r1File.name];
+    if (r2File) {
+      files.push(r2File.name);
+    }
+    setUploadReadsStatus(`Uploaded ${files.join(' + ')}`, 'ok');
+  } catch (error) {
+    console.error('uploadReads failed', error);
+    const message = error?.message ? `Upload failed: ${error.message}` : 'Upload failed';
+    setUploadReadsStatus(message, 'err');
+    alert(error?.message || 'Upload failed');
   }
-  await refreshState();
 }
 
 async function uploadAux() {
@@ -197,14 +238,14 @@ async function uploadAux() {
     (data.role && data.role !== 'other' ? ` (auto as ${data.role})` : '');
   // auto-fill in MaskPrimers cards
   if (data.role === 'v_primers' || data.role === 'other') {
-    $$('.card[data-unit="mask_primers"] input[name="v_primers_fname"]').forEach(el => {
+    $$('.unit-card[data-unit="mask_primers"] input[name="v_primers_fname"]').forEach(el => {
       if (!el.value) {
         el.value = data.stored_as;
       }
     });
   }
   if (data.role === 'c_primers') {
-    $$('.card[data-unit="mask_primers"] input[name="c_primers_fname"]').forEach(el => {
+    $$('.unit-card[data-unit="mask_primers"] input[name="c_primers_fname"]').forEach(el => {
       if (!el.value) {
         el.value = data.stored_as;
       }
@@ -377,12 +418,12 @@ function decorateDagControls(card, unit){
   });
   block.appendChild(addBtn);
 
-  const actions = card.querySelector('.actions');
+  const actions = card.querySelector('.card-actions');
   actions?.insertAdjacentElement('afterbegin', block);
   refreshDagFileSelects();
 }
-async function runUnit(card, unitId) {
-  const params = collectParams(card);
+async function runUnit(card, unitId, forcedParams) {
+  const params = forcedParams ? { ...forcedParams } : collectParams(card);
   const response = await fetch(`/session/${SID}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -453,11 +494,11 @@ async function refreshState() {
 /* -------------------- New grouped render -------------------- */
 function makeUnitCard(u){
   const card = document.createElement('div');
-  card.className = 'card compact';
+  card.className = 'unit-card';
   card.dataset.unit = u.id;
 
-  const req = (u.requires||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ') || '<span class="muted">none</span>';
-  let paramsHTML = '';
+  const requires = (u.requires||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ') || '<span class="muted">none</span>';
+  let paramsHTML = '<div class="params-body no-params">No parameters</div>';
   if (u.params_schema && Object.keys(u.params_schema).length){
     let inner = '';
     for (const [k,v] of Object.entries(u.params_schema||{})){
@@ -478,33 +519,28 @@ function makeUnitCard(u){
     paramsHTML = `
       <details class="params">
         <summary>Parameters</summary>
-        <div class="param-wrap">${inner}</div>
+        <div class="params-body">${inner}</div>
       </details>`;
   }
 
   card.innerHTML = `
-    <div class="card-head"><h3>${esc(u.label)}</h3></div>
-    <div class="reqs">requires: ${req}</div>
+    <div class="card-head">
+      <h3>${esc(u.label)}</h3>
+      <div class="requires">Requires: ${requires}</div>
+    </div>
     ${paramsHTML}
-    <div class="actions">
+    <div class="card-actions">
       <button class="run">Run</button>
       <button type="button" class="secondary pipe-add" data-unit-id="${esc(u.id)}" aria-pressed="false">Add to pipeline</button>
     </div>`;
 
   card.querySelector('.run').addEventListener('click', ()=>runUnit(card,u.id));
   const btn = card.querySelector('.pipe-add');
-  setPipeAddState(btn, false);
   btn.addEventListener('click', () => {
     const unitId = btn.dataset.unitId || card.dataset.unit;
     const meta = UNITS_META.find(m => m.id === unitId) || {};
     const label = meta.label || unitId;
-
-    const shouldAdd = !btn.classList.contains('active');
-    setPipeAddState(btn, shouldAdd);
-    PIPELINE = PIPELINE.filter(s => s.unit !== unitId);
-    if (shouldAdd) {
-      PIPELINE.push({unit: unitId, label, card});
-    }
+    PIPELINE.push({ id: ++PIPELINE_SEQ, unit: unitId, label, card, params: collectParams(card) });
     drawFlow();
   });
 
@@ -573,7 +609,7 @@ async function renderUnits(){
       const needle = q.value.trim().toLowerCase();
       const groups = mount.querySelectorAll('details.group');
       groups.forEach(g => {
-        const cards = g.querySelectorAll('.card');
+        const cards = g.querySelectorAll('.unit-card');
         let visible = 0;
         cards.forEach(c => {
           const hit = !needle || c.dataset.haystack.includes(needle);
@@ -690,13 +726,12 @@ function validateDagPipeline(dagApi){
 }
 
 function validateMaskPrimers(step){
-  const card = step.card;
-  const variant = (card.querySelector('[name="variant"]')?.value || 'align').toLowerCase();
+  const paramsSnapshot = step.params || (step.card ? collectParams(step.card) : {});
+  const variant = (paramsSnapshot.variant || 'align').toLowerCase();
   if(variant === 'align' || variant === 'score'){
-    const vbox = card.querySelector('input[name="v_primers_fname"]');
-    const vFilled = vbox && vbox.value.trim().length > 0;
+    const vValue = (paramsSnapshot.v_primers_fname || '').trim();
     const aux = (window.__SESSION_STATE__ && window.__SESSION_STATE__.aux) || {};
-    const ok = vFilled || !!aux?.v_primers;
+    const ok = vValue.length > 0 || !!aux?.v_primers;
     return ok ? {ok:true,msg:'MaskPrimers primers: OK'} : {ok:false,msg:'MaskPrimers needs V primers (upload aux or fill filename).'};
   }
   return {ok:true,msg:'MaskPrimers extract: OK'};
@@ -760,7 +795,7 @@ async function runLinearPipeline(){
   for(let i=0;i<bulkSteps.length;i++){
     const s = bulkSteps[i];
     setRunStatus(`Running <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`);
-    const ok = await runUnit(s.card, s.unit);
+    const ok = await runUnit(s.card, s.unit, s.params);
     setProgress(i+1, bulkSteps.length);
     if(!ok){ setRunStatus(`Failed at <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`); pipeMsg('Pipeline failed','err'); return; }
   }
@@ -925,8 +960,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#pipe-validate')?.addEventListener('click', validatePipeline);
   $('#pipe-run')?.addEventListener('click', runPipeline);
   $('#pipe-clear')?.addEventListener('click', ()=>{
-    $$('.pipe-add').forEach(btn=>setPipeAddState(btn, false));
     PIPELINE = [];
+    PIPELINE_SEQ = 0;
     drawFlow(); $('#validation').textContent='—'; pipeMsg('Pipeline cleared');
     resetBranchProgress();
   });
