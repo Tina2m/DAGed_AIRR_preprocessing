@@ -825,11 +825,12 @@ class U_SC_RemoveMultiHeavy(UnitSpec):
     locus_field : text
         Column that denotes chain locus (default: 'locus').
     heavy_value : text
-        Value that denotes the heavy locus (default: 'IGH').
+        Select a locus (or the 'TRA + TRB' combo) treated as heavy. Defaults to IGH when left empty.
     cell_field : text
         Column with the cell identifier (default: 'cell_id')  — REQUIRED in input.
     fallback_from_vcall : select {'true','false'}
-        If `locus_field` is missing, detect heavy with grepl('^IGH', v_call) (default true).
+        If `locus_field` is missing, detect heavy loci via v_call prefixes (e.g., '^IGH', '^TRA',
+        '^TRB') (default true).
     mode : select {'merge','per_file'}
         'merge' → one file SC_no_multi_heavy.tsv; 'per_file' → one file per input.
         In both cases SC_TABLE is set (first produced when per_file).
@@ -861,7 +862,7 @@ class U_SC_RemoveMultiHeavy(UnitSpec):
                 raise HTTPException(400, f"File not found in session: {n}")
 
         locus_field = (params.get("locus_field") or "locus").strip() or "locus"
-        heavy_value = (params.get("heavy_value") or "IGH").strip() or "IGH"
+        heavy_value_text = (params.get("heavy_value") or "IGH").strip() or "IGH"
         cell_field  = (params.get("cell_field")  or "cell_id").strip() or "cell_id"
         fb          = str(params.get("fallback_from_vcall", "true")).lower() in ("1","true","yes","y")
         mode        = (params.get("mode") or "merge").strip().lower()
@@ -872,14 +873,23 @@ class U_SC_RemoveMultiHeavy(UnitSpec):
         # ---- R script ----
         rfile = sess_dir / f"{idx:03d}_sc_remove_multi_heavy.R"
         out_merged = "SC_no_multi_heavy.tsv"
-        # pass: out_merged, mode, sfield, locus_field, heavy_value, cell_field, fallbackFlag, then files...
+        heavy_values = [v for v in re.split(r"[,\s]+", heavy_value_text) if v]
+        if not heavy_values:
+            heavy_values = ["IGH"]
+        hv_joined = ",".join(heavy_values)
+
+        # pass: out_merged, mode, sfield, locus_field, heavy_values (comma-joined), cell_field, fallbackFlag, then files...
         r_code = f"""
 args <- commandArgs(trailingOnly=TRUE)
 out_merged <- args[1]
 mode <- args[2]
 sfield <- args[3]
 locus_field <- {repr(locus_field)}
-heavy_value <- {repr(heavy_value)}
+heavy_values <- unlist(strsplit({repr(hv_joined)}, ","))
+heavy_values <- heavy_values[nchar(heavy_values) > 0]
+if (length(heavy_values) == 0) {{
+  heavy_values <- c("IGH")
+}}
 cell_field <- {repr(cell_field)}
 fallbackFlag <- as.logical({str(fb).upper()})
 files <- args[-(1:3)]
@@ -894,20 +904,35 @@ read_one <- function(f){{
     stop(paste("Column", cell_field, "not found in", f))
   }}
 
-  # Identify heavy chains
-  if (locus_field %in% colnames(df)) {{
-    heavy_mask <- (df[[locus_field]] == heavy_value)
-  }} else if (fallbackFlag && ("v_call" %in% colnames(df))) {{
-    heavy_mask <- grepl("^IGH", as.character(df[["v_call"]]))
-  }} else {{
-    warning(paste("No", locus_field, "and no v_call; assuming no heavy calls in", f))
-    heavy_mask <- rep(FALSE, nrow(df))
+  multi_cells <- character(0)
+  collect_multi <- function(mask) {{
+    if (!any(mask)) {{
+      return(character(0))
+    }}
+    cells <- df[mask, cell_field]
+    cells <- cells[!is.na(cells)]
+    if (length(cells) == 0) {{
+      return(character(0))
+    }}
+    tab <- table(cells)
+    names(tab[tab > 1])
   }}
 
-  # Find cells with >1 heavy
-  heavy_cells <- df[heavy_mask, cell_field]
-  tab <- table(heavy_cells)
-  multi_cells <- names(tab[tab > 1])
+  if (locus_field %in% colnames(df)) {{
+    loci_vals <- as.character(df[[locus_field]])
+    for (hv in heavy_values) {{
+      multi_cells <- union(multi_cells, collect_multi(loci_vals == hv))
+    }}
+  }} else if (fallbackFlag && ("v_call" %in% colnames(df))) {{
+    vc <- as.character(df[["v_call"]])
+    for (hv in heavy_values) {{
+      pattern <- paste0("^", hv)
+      multi_cells <- union(multi_cells, collect_multi(grepl(pattern, vc)))
+    }}
+  }} else {{
+    warning(paste("No", locus_field, "and no v_call; assuming no heavy calls in", f))
+    return(df)
+  }}
 
   # Filter out those cells
   keep <- !(df[[cell_field]] %in% multi_cells)
@@ -1231,7 +1256,7 @@ UNITS: Dict[str, UnitSpec] = {
     ),
      "sc_merge_samples": U_MergeSamples(
         id="sc_merge_samples",
-        label="SC: Merge samples (AIRR TSV)",
+        label="Merge samples",
         requires=[],
         group="sc",
         params_schema={
@@ -1242,7 +1267,7 @@ UNITS: Dict[str, UnitSpec] = {
     ),
     "sc_filter_productive": U_SC_FilterProductive(
         id="sc_filter_productive",
-        label="SC: Keep productive sequences (independent)",
+        label="Keep productive sequences",
         requires=[],   # <-- no dependency on SC_TABLE
         group="sc",
         params_schema={
@@ -1256,23 +1281,34 @@ UNITS: Dict[str, UnitSpec] = {
     ),
     "sc_remove_multi_heavy": U_SC_RemoveMultiHeavy(
         id="sc_remove_multi_heavy",
-        label="SC: Remove cells with multiple heavy chains (independent)",
+        label="Remove cells with multiple heavy chains",
         requires=[],  # fully independent
         group="sc",
         params_schema={
             "files": {"type":"text","placeholder":"file1.tsv file2.tsv (blank = all *.tsv/*.tsv.gz)"},
-            "locus_field": {"type":"text","default":"locus","help":"Column with chain locus (IGH/IGK/IGL)"},
-            "heavy_value": {"type":"text","default":"IGH","help":"Value indicating heavy locus"},
+            "locus_field": {"type":"text","default":"locus","help":"Column with chain locus (IGH/IGK/IGL/TRA/TRB)"},
+            "heavy_value": {
+                "type":"select",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "IGH",
+                    "TRA",
+                    "TRB",
+                    {"value":"TRA, TRB","label":"TRA + TRB"}
+                ],
+                "default":"",
+                "help":"Select the locus to treat as heavy (use 'TRA + TRB' to catch both)."
+            },
             "cell_field": {"type":"text","default":"cell_id","help":"Cell identifier column (required)"},
             "fallback_from_vcall": {"type":"select","options":["true","false"],"default":"true",
-                                    "help":"If locus missing, detect heavy via v_call =~ '^IGH'"},
+                                    "help":"If locus missing, detect heavy via v_call prefixes (e.g., '^IGH' or '^TRA')"},
             "mode": {"type":"select","options":["merge","per_file"],"default":"merge"},
             "sample_field": {"type":"text","default":"sample_id","help":"Add origin column when merging"}
         },
     ),
     "sc_remove_no_heavy": U_SC_RemoveNoHeavy(
         id="sc_remove_no_heavy",
-        label="SC: Remove cells without heavy chains (independent)",
+        label="Remove cells without heavy chains",
         requires=[],  # independent
         group="sc",
         params_schema={
