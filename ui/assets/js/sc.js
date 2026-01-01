@@ -281,6 +281,27 @@ function renderFlow() {
   $('#validation').innerHTML = '—';
 }
 
+// ----- Flow progress -----
+function setPipelineProgress(percent, hint) {
+  const bar = $('#pstate-bar');
+  const progress = $('#pstate-progress');
+  const msg = $('#pstate-progress-msg');
+  const numeric = Number(percent);
+  const clamped = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
+  if (bar) {
+    bar.style.width = clamped + '%';
+  }
+  if (progress) {
+    progress.setAttribute('aria-valuenow', clamped.toFixed(0));
+  }
+  if (hint !== undefined && msg) {
+    msg.textContent = hint;
+  }
+}
+function resetPipelineProgress() {
+  setPipelineProgress(0, 'Waiting to run');
+}
+
 // ----- Validation & run -----
 function validateFlow() {
   if (FLOW.length === 0) {
@@ -323,18 +344,28 @@ async function runFlow() {
     return;
   }
   running = true;
-  $('#pstate').textContent = `starting (${FLOW.length} steps)…`;
-  for (let index = 0; index < FLOW.length; index++) {
+  const totalSteps = FLOW.length;
+  const stepsLabel = `step${totalSteps === 1 ? '' : 's'}`;
+  const startMsg = `starting (${totalSteps} ${stepsLabel})...`;
+  $('#pstate').textContent = startMsg;
+  setPipelineProgress(0, `Starting ${totalSteps} ${stepsLabel}`);
+  for (let index = 0; index < totalSteps; index++) {
     const step = FLOW[index];
-    $('#pstate').textContent = `running step ${index + 1}/${FLOW.length}: ${step.label}`;
+    const runningMsg = `running step ${index + 1}/${totalSteps}: ${step.label}`;
+    $('#pstate').textContent = runningMsg;
+    setPipelineProgress((index / totalSteps) * 100, runningMsg);
     const success = await runUnit(step);
     if (!success) {
-      $('#pstate').textContent = `failed at step ${index + 1}: ${step.label}`;
+      const failMsg = `failed at step ${index + 1}: ${step.label}`;
+      $('#pstate').textContent = failMsg;
+      setPipelineProgress((index / totalSteps) * 100, `Failed at step ${index + 1}/${totalSteps}`);
       running = false;
       return;
     }
+    setPipelineProgress(((index + 1) / totalSteps) * 100, `Completed ${index + 1}/${totalSteps}`);
   }
-  $('#pstate').textContent = 'finished ✓';
+  $('#pstate').textContent = 'finished ?';
+  setPipelineProgress(100, 'Pipeline complete');
   running = false;
 }
 
@@ -387,11 +418,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#upload-sc').addEventListener('click', uploadSCFiles);
   $('#validate').addEventListener('click', validateFlow);
   $('#runflow').addEventListener('click', runFlow);
-  $('#clearflow').addEventListener('click', ()=>{ FLOW=[]; renderFlow(); $('#validation').textContent='—'; $('#pstate').textContent='idle'; });
+  $('#clearflow').addEventListener('click', ()=>{ FLOW=[]; renderFlow(); $('#validation').textContent='—'; $('#pstate').textContent='idle'; resetPipelineProgress(); });
   $('#unit-search').addEventListener('input', applySearch);
   $('#expAll').addEventListener('click', expandAll);
   $('#colAll').addEventListener('click', collapseAll);
 
+  resetPipelineProgress();
   await ensureSession();
   await renderUnits();
   applySearch(); // initialize

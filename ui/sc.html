@@ -87,6 +87,12 @@
         <div class="mt8">
           <label class="muted">Pipeline state</label>
           <div id="pstate" class="muted">idle</div>
+          <div class="pipeline-progress" aria-live="polite">
+            <div class="progress" id="pstate-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="bar" id="pstate-bar"></div>
+            </div>
+            <div id="pstate-progress-msg" class="muted progress-hint">Waiting to run</div>
+          </div>
         </div>
         <div class="mt8">
           <h3>Notes</h3>
