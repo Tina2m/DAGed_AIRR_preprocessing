@@ -272,7 +272,7 @@ function renderFlow() {
       const listItem = document.createElement('li');
       listItem.className = 'flow-item';
       listItem.innerHTML = `<div class="flow-step">${index + 1}</div>
-                            <div class="flow-label">${esc(step.label)} <span class="muted">(${esc(step.unitId)})</span></div>
+                            <div class="flow-label">${esc(step.label)}</div>
                             <button class="flow-remove" title="Remove">✕</button>`;
       listItem.querySelector('.flow-remove').addEventListener('click', () => removeFromFlow(index));
       flowList.appendChild(listItem);
@@ -364,7 +364,7 @@ async function runFlow() {
     }
     setPipelineProgress(((index + 1) / totalSteps) * 100, `Completed ${index + 1}/${totalSteps}`);
   }
-  $('#pstate').textContent = 'finished ?';
+  $('#pstate').textContent = 'finished ✓';
   setPipelineProgress(100, 'Pipeline complete');
   running = false;
 }
