@@ -440,6 +440,7 @@ class U_MaskPrimers(UnitSpec):
             raise HTTPException(400, f"Unsupported variant '{variant}'. Choose from align, score, extract.")
 
         for a in produced: sess.artifacts[a.name] = a
+        print(("step_index=",idx, "unit=", self.id, "params=", params, "produced=", produced))
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
 # Pairing & Assembly
