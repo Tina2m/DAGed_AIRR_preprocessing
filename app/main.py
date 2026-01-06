@@ -123,6 +123,7 @@ def run_cmd(cmd: List[str], cwd: pathlib.Path, log_file: pathlib.Path):
         "AssemblePairs.py", "CollapseSeq.py", "BuildConsensus.py",
     }
     final_cmd = list(cmd)
+    print('CMD:',final_cmd)
     if tool in NPROC_TOOLS and "--nproc" not in final_cmd:
         final_cmd += ["--nproc", str(nproc)]
 
