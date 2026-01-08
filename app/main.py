@@ -63,6 +63,7 @@ class SessionState(BaseModel):
     artifacts: Dict[str, Artifact] = {}
     current: Dict[str, str] = {}     # channel -> artifact-name
     aux: Dict[str, str] = {}         # e.g. {"v_primers": "Greiff2014_VPrimers.fasta"}
+    aux_files: List[str] = []        # all uploaded aux filenames
     
 def _ensure_uncompressed_path(path: pathlib.Path, dest: pathlib.Path) -> pathlib.Path:
     """If `path` endswith .gz, decompress to `dest` (overwrite) and return dest; else return path."""
@@ -227,12 +228,135 @@ def file_existing(sess_dir: pathlib.Path, *candidates: str) -> str:
 
 def find_pass_for_prefix(sess_dir: pathlib.Path, prefix: str) -> str:
     for ext in ("fastq.gz","fastq","fasta.gz","fasta"):
-        for tag in ("mask-pass","align-primers-pass","primers-pass","extract-pass","quality-pass",
+        for tag in ("mask-pass","align-primers-pass","primers-pass","extract-pass","score-pass", "quality-pass",
                     "length-pass","missing-pass","repeats-pass","trimqual-pass","maskqual-pass",
                     "assemble-pass","collapse-pass"):
             p = sess_dir / f"{prefix}_{tag}.{ext}"
             if p.exists(): return p.name
     raise HTTPException(500, f"Expected output not found for prefix '{prefix}'.")
+
+def _maskprimers_log_summary(log_path: pathlib.Path) -> str:
+    if not log_path.exists():
+        return ""
+    try:
+        lines = log_path.read_text(errors="ignore").splitlines()
+    except Exception:
+        return ""
+    keys = ["OUTPUT>", "SEQUENCES>", "PASS>", "FAIL>", "END>"]
+    found: Dict[str, str] = {}
+    for line in reversed(lines):
+        s = line.strip()
+        for key in keys:
+            if s.startswith(key):
+                if key not in found:
+                    found[key] = s
+                break
+        if len(found) == len(keys):
+            break
+    if not found:
+        return ""
+    return "\n".join(found.get(k) for k in keys if k in found)
+
+def _maskprimers_no_output_message(log_path: pathlib.Path) -> str:
+    msg = "MaskPrimers produced no passing reads. Adjust parameters and rerun."
+    summary = _maskprimers_log_summary(log_path)
+    if summary:
+        msg += "\n" + summary
+    return msg
+
+def _default_outname_from_path(path: pathlib.Path) -> str:
+    name = path.name
+    if name.lower().endswith(".gz"):
+        name = name[:-3]
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    return name
+
+def _guess_channel_from_name(name: str) -> Optional[str]:
+    upper = name.upper()
+    if "PAIR1" in upper:
+        return "PAIR1"
+    if "PAIR2" in upper:
+        return "PAIR2"
+    if "ASSEMBLED" in upper:
+        return "ASSEMBLED"
+    if "MERGED" in upper:
+        return "MERGED"
+    if "R2" in upper:
+        return "R2"
+    if "R1" in upper:
+        return "R1"
+    return None
+
+def _parse_files_param(files_param: str) -> Optional[str]:
+    if not files_param:
+        return None
+    for entry in str(files_param).split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" in entry:
+            _, key = entry.split(":", 1)
+        else:
+            key = entry
+        key = key.strip()
+        if key:
+            return key
+    return None
+
+def _resolve_input_sequence(sess: SessionState, sdir: pathlib.Path, params: Dict[str, Any]) -> tuple[pathlib.Path, str]:
+    input_key = _parse_files_param(params.get("__files", ""))
+    if not input_key:
+        input_key = (params.get("input_artifact") or "").strip()
+
+    input_channel = ""
+    if input_key:
+        if input_key in sess.artifacts:
+            art = sess.artifacts[input_key]
+            seq_path = sdir / art.path
+            input_channel = art.channel or _guess_channel_from_name(art.path) or ""
+        else:
+            seq_path = sdir / input_key
+            if not seq_path.exists():
+                raise HTTPException(400, f"Input artifact not found: {input_key}")
+            input_channel = (params.get("input_channel") or "").strip() or _guess_channel_from_name(seq_path.name) or ""
+    else:
+        channel_param = (params.get("input_channel") or "R1").strip().upper()
+        _assert_channel(sess, channel_param)
+        art = sess.artifacts[sess.current[channel_param]]
+        seq_path = sdir / art.path
+        input_channel = art.channel or channel_param
+
+    return seq_path, input_channel
+
+def _last_log_section(log_path: pathlib.Path, max_chars: int = 1500) -> str:
+    if not log_path.exists():
+        return ""
+    try:
+        lines = log_path.read_text(errors="ignore").splitlines()
+    except Exception:
+        return ""
+    idx = len(lines) - 1
+    while idx >= 0 and not lines[idx].strip():
+        idx -= 1
+    if idx < 0:
+        return ""
+    block = []
+    while idx >= 0 and lines[idx].strip():
+        block.append(lines[idx])
+        idx -= 1
+    block.reverse()
+    text = "\n".join(block).strip()
+    if max_chars and len(text) > max_chars:
+        text = text[-max_chars:]
+    return text
+
+def _format_error_with_log(error_text: str, log_section: str) -> str:
+    if not log_section:
+        return error_text
+    if log_section in error_text:
+        return error_text
+    return f"{error_text}\n\nLast log section:\n{log_section}"
 
 def _assert_channel(sess: SessionState, ch: str):
     if ch not in sess.current:
@@ -384,6 +508,7 @@ class U_MaskPrimers(UnitSpec):
         idx = _next_idx(sess)
         variant = params.get("variant","align")
         mode = params.get("mode","mask")
+        score_maxerror = params.get("score_maxerror")
         log = sdir / f"{idx:03d}_MaskPrimers_{variant}.log"
 
         _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
@@ -396,10 +521,15 @@ class U_MaskPrimers(UnitSpec):
             v_fa = sdir / v_name
             cmd = ["MaskPrimers.py", variant, "-s", str(r1), "-p", str(v_fa),
                    "--mode", mode, "--pf", "VPRIMER", "--outname", "R1", "--log", log.name]
+            if variant == "score" and score_maxerror not in (None, ""):
+                cmd += ["--maxerror", str(score_maxerror)]
             if str(params.get("revpr","false")).lower() in ("1","true","yes","y"):
                 cmd.append("--revpr")
             run_cmd(cmd, sdir, log)
-            out_r1 = find_pass_for_prefix(sdir, "R1")
+            try:
+                out_r1 = find_pass_for_prefix(sdir, "R1")
+            except HTTPException:
+                raise RuntimeError(_maskprimers_no_output_message(log))
             produced.append(Artifact(name="R1_masked", path=out_r1, kind="fastq", channel="R1", from_step=idx))
             sess.current["R1"] = "R1_masked"
 
@@ -410,10 +540,15 @@ class U_MaskPrimers(UnitSpec):
                     c_fa = sdir / c_name
                     cmd2 = ["MaskPrimers.py", variant, "-s", str(r2), "-p", str(c_fa),
                             "--mode", mode, "--pf", "CPRIMER", "--outname", "R2", "--log", log.name]
+                    if variant == "score" and score_maxerror not in (None, ""):
+                        cmd2 += ["--maxerror", str(score_maxerror)]
                     if str(params.get("revpr","false")).lower() in ("1","true","yes","y"):
                         cmd2.append("--revpr")
                     run_cmd(cmd2, sdir, log)
-                    out_r2 = find_pass_for_prefix(sdir, "R2")
+                    try:
+                        out_r2 = find_pass_for_prefix(sdir, "R2")
+                    except HTTPException:
+                        raise RuntimeError(_maskprimers_no_output_message(log))
                     produced.append(Artifact(name="R2_masked", path=out_r2, kind="fastq", channel="R2", from_step=idx))
                     sess.current["R2"] = "R2_masked"
 
@@ -425,7 +560,10 @@ class U_MaskPrimers(UnitSpec):
             cmd = ["MaskPrimers.py","extract","-s",str(r1),"--start",str(start),"--len",str(length),
                    "--mode",mode,"--pf","EXTRACT","--outname","R1","--log",log.name]
             run_cmd(cmd, sdir, log)
-            out_r1 = find_pass_for_prefix(sdir, "R1")
+            try:
+                out_r1 = find_pass_for_prefix(sdir, "R1")
+            except HTTPException:
+                raise RuntimeError(_maskprimers_no_output_message(log))
             produced.append(Artifact(name="R1_extracted", path=out_r1, kind="fastq", channel="R1", from_step=idx))
             sess.current["R1"] = "R1_extracted"
 
@@ -434,7 +572,10 @@ class U_MaskPrimers(UnitSpec):
                 cmd2 = ["MaskPrimers.py","extract","-s",str(r2),"--start",str(start),"--len",str(length),
                         "--mode",mode,"--pf","EXTRACT","--outname","R2","--log",log.name]
                 run_cmd(cmd2, sdir, log)
-                out_r2 = find_pass_for_prefix(sdir, "R2")
+                try:
+                    out_r2 = find_pass_for_prefix(sdir, "R2")
+                except HTTPException:
+                    raise RuntimeError(_maskprimers_no_output_message(log))
                 produced.append(Artifact(name="R2_extracted", path=out_r2, kind="fastq", channel="R2", from_step=idx))
                 sess.current["R2"] = "R2_extracted"
         else:
@@ -442,6 +583,247 @@ class U_MaskPrimers(UnitSpec):
 
         for a in produced: sess.artifacts[a.name] = a
         print(("step_index=",idx, "unit=", self.id, "params=", params, "produced=", produced))
+        return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
+
+class U_MaskPrimersScore(UnitSpec):
+    def run(self, sess, sdir, params):
+        idx = _next_idx(sess)
+        log = sdir / f"{idx:03d}_MaskPrimers_score.log"
+
+        def build_cmd(seq_path: pathlib.Path, primer_path: pathlib.Path, outname: str, primer_field: str) -> List[str]:
+            mode = params.get("mode", "mask")
+            cmd = [
+                "MaskPrimers.py", "score",
+                "-s", str(seq_path),
+                "-p", str(primer_path),
+                "--mode", mode,
+                "--outname", outname,
+                "--log", log.name,
+            ]
+            if primer_field:
+                cmd += ["--pf", primer_field]
+            start = params.get("start")
+            if start not in (None, ""):
+                cmd += ["--start", str(start)]
+            max_error = params.get("max_error")
+            if max_error not in (None, ""):
+                cmd += ["--maxerror", str(max_error)]
+            if str(params.get("revpr", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--revpr")
+            if str(params.get("barcode", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--barcode")
+                barcodelen = params.get("barcodelen")
+                if barcodelen not in (None, ""):
+                    cmd += ["--barcodelen", str(barcodelen)]
+                barcode_field = params.get("barcode_field")
+                if barcode_field not in (None, ""):
+                    cmd += ["--bf", str(barcode_field)]
+            if str(params.get("fasta", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--fasta")
+            if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--failed")
+            return cmd
+
+        produced: List[Artifact] = []
+        seq_path, input_channel = _resolve_input_sequence(sess, sdir, params)
+
+        primer_name = (params.get("primer_fname") or "").strip()
+        if not primer_name:
+            aux = load_state(sdir).aux
+            if aux.get("v_primers") and not aux.get("c_primers"):
+                primer_name = aux["v_primers"]
+            elif aux.get("c_primers") and not aux.get("v_primers"):
+                primer_name = aux["c_primers"]
+        if not primer_name:
+            raise HTTPException(400, "primer_fname is required for score.")
+        primer_fa = sdir / primer_name
+        if not primer_fa.exists():
+            raise HTTPException(400, f"Primer file not found: {primer_name}")
+
+        outname = (params.get("outname") or "").strip() or _default_outname_from_path(seq_path)
+        primer_field = (params.get("primer_field") or "PRIMER").strip()
+        cmd = build_cmd(seq_path, primer_fa, outname, primer_field)
+
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+
+        run_cmd(cmd, sdir, log)
+        try:
+            out_path = find_pass_for_prefix(sdir, outname)
+        except HTTPException:
+            raise RuntimeError(_maskprimers_no_output_message(log))
+        kind = _detect_kind_from_name(out_path) or "fastq"
+        channel = input_channel or _guess_channel_from_name(out_path) or "R1"
+        artifact_name = f"{channel}_score"
+        produced.append(Artifact(name=artifact_name, path=out_path, kind=kind, channel=channel, from_step=idx))
+        sess.artifacts[artifact_name] = produced[-1]
+        if channel:
+            sess.current[channel] = artifact_name
+
+        return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
+
+class U_MaskPrimersAlign(UnitSpec):
+    def run(self, sess, sdir, params):
+        idx = _next_idx(sess)
+        log = sdir / f"{idx:03d}_MaskPrimers_align.log"
+
+        def build_cmd(seq_path: pathlib.Path, primer_path: pathlib.Path, outname: str, primer_field: str) -> List[str]:
+            mode = params.get("mode", "mask")
+            cmd = [
+                "MaskPrimers.py", "align",
+                "-s", str(seq_path),
+                "-p", str(primer_path),
+                "--mode", mode,
+                "--outname", outname,
+                "--log", log.name,
+            ]
+            if primer_field:
+                cmd += ["--pf", primer_field]
+            max_error = params.get("max_error")
+            if max_error not in (None, ""):
+                cmd += ["--maxerror", str(max_error)]
+            max_len = params.get("max_len")
+            if max_len not in (None, ""):
+                cmd += ["--maxlen", str(max_len)]
+            gap = (params.get("gap") or "").strip()
+            if gap:
+                parts = [p for p in gap.replace(",", " ").split() if p]
+                if len(parts) != 2:
+                    raise HTTPException(400, "gap must contain exactly 2 values.")
+                cmd += ["--gap"] + parts
+            if str(params.get("revpr", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--revpr")
+            if str(params.get("skiprc", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--skiprc")
+            if str(params.get("barcode", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--barcode")
+                barcodelen = params.get("barcodelen")
+                if barcodelen not in (None, ""):
+                    cmd += ["--barcodelen", str(barcodelen)]
+                barcode_field = params.get("barcode_field")
+                if barcode_field not in (None, ""):
+                    cmd += ["--bf", str(barcode_field)]
+            if str(params.get("fasta", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--fasta")
+            if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--failed")
+            return cmd
+
+        produced: List[Artifact] = []
+        seq_path, input_channel = _resolve_input_sequence(sess, sdir, params)
+
+        primer_name = (params.get("primer_fname") or "").strip()
+        if not primer_name:
+            aux = load_state(sdir).aux
+            if aux.get("v_primers") and not aux.get("c_primers"):
+                primer_name = aux["v_primers"]
+            elif aux.get("c_primers") and not aux.get("v_primers"):
+                primer_name = aux["c_primers"]
+        if not primer_name:
+            raise HTTPException(400, "primer_fname is required for align.")
+        primer_fa = sdir / primer_name
+        if not primer_fa.exists():
+            raise HTTPException(400, f"Primer file not found: {primer_name}")
+
+        outname = (params.get("outname") or "").strip() or _default_outname_from_path(seq_path)
+        primer_field = (params.get("primer_field") or "PRIMER").strip()
+        cmd = build_cmd(seq_path, primer_fa, outname, primer_field)
+
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+
+        run_cmd(cmd, sdir, log)
+        try:
+            out_path = find_pass_for_prefix(sdir, outname)
+        except HTTPException:
+            raise RuntimeError(_maskprimers_no_output_message(log))
+        kind = _detect_kind_from_name(out_path) or "fastq"
+        channel = input_channel or _guess_channel_from_name(out_path) or "R1"
+        artifact_name = f"{channel}_align"
+        produced.append(Artifact(name=artifact_name, path=out_path, kind=kind, channel=channel, from_step=idx))
+        sess.artifacts[artifact_name] = produced[-1]
+        if channel:
+            sess.current[channel] = artifact_name
+
+        return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
+
+class U_MaskPrimersExtract(UnitSpec):
+    def run(self, sess, sdir, params):
+        idx = _next_idx(sess)
+        log = sdir / f"{idx:03d}_MaskPrimers_extract.log"
+
+        def build_cmd(seq_path: pathlib.Path, outname: str, primer_field: str) -> List[str]:
+            mode = params.get("mode", "mask")
+            cmd = [
+                "MaskPrimers.py", "extract",
+                "-s", str(seq_path),
+                "--mode", mode,
+                "--outname", outname,
+                "--log", log.name,
+            ]
+            if primer_field:
+                cmd += ["--pf", primer_field]
+            start = params.get("start")
+            if start not in (None, ""):
+                cmd += ["--start", str(start)]
+            length = params.get("length")
+            if length not in (None, ""):
+                cmd += ["--len", str(length)]
+            if str(params.get("revpr", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--revpr")
+            if str(params.get("barcode", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--barcode")
+                barcodelen = params.get("barcodelen")
+                if barcodelen not in (None, ""):
+                    cmd += ["--barcodelen", str(barcodelen)]
+                barcode_field = params.get("barcode_field")
+                if barcode_field not in (None, ""):
+                    cmd += ["--bf", str(barcode_field)]
+            if str(params.get("fasta", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--fasta")
+            if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+                cmd.append("--failed")
+            return cmd
+
+        produced: List[Artifact] = []
+        seq_path, input_channel = _resolve_input_sequence(sess, sdir, params)
+
+        length = params.get("length")
+        if length in (None, ""):
+            raise HTTPException(400, "length is required for extract.")
+
+        outname = (params.get("outname") or "").strip() or _default_outname_from_path(seq_path)
+        primer_field = (params.get("primer_field") or "").strip()
+        cmd = build_cmd(seq_path, outname, primer_field)
+
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+
+        run_cmd(cmd, sdir, log)
+        try:
+            out_path = find_pass_for_prefix(sdir, outname)
+        except HTTPException:
+            raise RuntimeError(_maskprimers_no_output_message(log))
+        kind = _detect_kind_from_name(out_path) or "fastq"
+        channel = input_channel or _guess_channel_from_name(out_path) or "R1"
+        artifact_name = f"{channel}_extract"
+        produced.append(Artifact(name=artifact_name, path=out_path, kind=kind, channel=channel, from_step=idx))
+        sess.artifacts[artifact_name] = produced[-1]
+        if channel:
+            sess.current[channel] = artifact_name
+
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
 # Pairing & Assembly
@@ -1189,11 +1571,73 @@ UNITS: Dict[str, UnitSpec] = {
         params_schema={
             "variant":{"type":"select","options":["align","score","extract"],"default":"align"},
             "mode":{"type":"select","options":["cut","mask","trim","tag"],"default":"mask"},
+            "score_maxerror":{"type":"text","label":"Score max error","placeholder":"e.g. 0.1","optional":True,"help":"Only used for score variant"},
             "v_primers_fname":{"type":"file","accept":".fa,.fasta","help":"Optional if V primers uploaded in section 1"},
             "c_primers_fname":{"type":"file","accept":".fa,.fasta","optional":True,"help":"Optional if C primers uploaded"},
             "start":{"type":"int","default":0,"min":0},
             "length":{"type":"int","default":30,"min":1},
-            "revpr":{"type":"select","options":["false","true"],"default":"false"},
+            "revpr":{"type":"checkbox","default":False},
+        }
+    ),
+    "mask_primers_score": U_MaskPrimersScore(
+        id="mask_primers_score", label="MaskPrimers: score", requires=[], group="bulk",
+        params_schema={
+            "input_artifact":{"type":"text","label":"Input artifact","placeholder":"artifact key or filename (optional)"},
+            "input_channel":{"type":"select","label":"Input channel","options":["R1","R2"],"default":"R1"},
+            "primer_fname":{"type":"select","label":"Primer file","options":[],"help":"Select from uploaded aux files"},
+            "outname":{"type":"text","label":"Outname","placeholder":"leave blank to use input name"},
+            "start":{"type":"int","default":0,"min":0},
+            "max_error":{"type":"text","label":"Max error","placeholder":"e.g. 0.1"},
+            "mode":{"type":"select","options":["cut","mask","trim","tag"],"default":"mask"},
+            "primer_field":{"type":"select","options":[{"value":"","label":"choose..."}, "MID", "VPRIMER", "CPRIMER"],"default":""},
+            "revpr":{"type":"checkbox","default":False},
+            "barcode":{"type":"checkbox","default":False},
+            "barcodelen":{"type":"int","min":1,"placeholder":"use full if blank"},
+            "barcode_field":{"type":"text","placeholder":"BARCODE"},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "fasta":{"type":"checkbox","default":False},
+            "failed":{"type":"checkbox","default":False},
+        }
+    ),
+    "mask_primers_align": U_MaskPrimersAlign(
+        id="mask_primers_align", label="MaskPrimers: align", requires=[], group="bulk",
+        params_schema={
+            "input_artifact":{"type":"text","label":"Input artifact","placeholder":"artifact key or filename (optional)"},
+            "input_channel":{"type":"select","label":"Input channel","options":["R1","R2"],"default":"R1"},
+            "primer_fname":{"type":"select","label":"Primer file","options":[],"help":"Select from uploaded aux files"},
+            "outname":{"type":"text","label":"Outname","placeholder":"leave blank to use input name"},
+            "max_error":{"type":"text","label":"Max error","placeholder":"e.g. 0.1"},
+            "max_len":{"type":"text","label":"Max length","placeholder":"e.g. 30"},
+            "gap":{"type":"text","label":"Gap penalty","placeholder":"e.g. 5 2"},
+            "mode":{"type":"select","options":["cut","mask","trim","tag"],"default":"mask"},
+            "primer_field":{"type":"select","options":[{"value":"","label":"choose..."}, "MID", "VPRIMER", "CPRIMER"],"default":""},
+            "revpr":{"type":"checkbox","default":False},
+            "skiprc":{"type":"checkbox","default":False},
+            "barcode":{"type":"checkbox","default":False},
+            "barcodelen":{"type":"int","min":1,"placeholder":"use full if blank"},
+            "barcode_field":{"type":"text","placeholder":"BARCODE"},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "fasta":{"type":"checkbox","default":False},
+            "failed":{"type":"checkbox","default":False},
+        }
+    ),
+    "mask_primers_extract": U_MaskPrimersExtract(
+        id="mask_primers_extract", label="MaskPrimers: extract", requires=[], group="bulk",
+        params_schema={
+            "input_artifact":{"type":"text","label":"Input artifact","placeholder":"artifact key or filename (optional)"},
+            "input_channel":{"type":"select","label":"Input channel","options":["R1","R2"],"default":"R1"},
+            "outname":{"type":"text","label":"Outname","placeholder":"leave blank to use input name"},
+            "start":{"type":"int","default":0,"min":0},
+            "length":{"type":"int","label":"Length","min":1},
+            "mode":{"type":"select","options":["cut","mask","trim","tag"],"default":"mask"},
+            "primer_field":{"type":"select","options":[{"value":"","label":"choose..."}, "MID", "VPRIMER", "CPRIMER"],"default":""},
+            "revpr":{"type":"checkbox","default":False},
+            "barcode":{"type":"checkbox","default":False},
+            "barcodelen":{"type":"int","min":1,"placeholder":"use full if blank"},
+            "barcode_field":{"type":"text","placeholder":"BARCODE"},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "fasta":{"type":"checkbox","default":False},
+            "failed":{"type":"checkbox","default":False},
         }
     ),
     "pairseq": U_PairSeq(
@@ -1389,9 +1833,11 @@ async def upload_aux_file(sid: str, file: UploadFile = File(...), name: Optional
     with open(sdir / fname, "wb") as f:
         shutil.copyfileobj(file.file, f)
     role = _guess_aux_role(fname)
+    if fname not in sess.aux_files:
+        sess.aux_files.append(fname)
     if role in ("v_primers","c_primers"):
         sess.aux[role] = fname
-        save_state(sdir, sess)
+    save_state(sdir, sess)
     return {"stored_as": fname, "role": role}
 
 @app.post("/session/{sid}/run")
@@ -1419,7 +1865,9 @@ def run_unit(sid: str, body: RunBody = Body(...)):
             try: tail += p.read_text(errors="ignore") + "\n\n"
             except: pass
         if len(tail) > 5000: tail = tail[-5000:]
-        raise HTTPException(status_code=500, detail={"error": str(e), "log_tail": tail})
+        section = _last_log_section(logs[-1]) if logs else ""
+        err_text = _format_error_with_log(str(e), section)
+        raise HTTPException(status_code=500, detail={"error": err_text, "log_tail": tail})
 
 @app.get("/session/{sid}/state")
 def get_state(sid: str):

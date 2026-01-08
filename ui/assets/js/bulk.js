@@ -309,6 +309,7 @@ function buildParamField(node, def){
   wrap.appendChild(label);
 
   let input;
+  const inlineCheckbox = def.type === 'checkbox';
   if(def.type === 'select'){
     input = document.createElement('select');
     (def.options || []).forEach(opt => {
@@ -324,7 +325,7 @@ function buildParamField(node, def){
     });
   } else {
     input = document.createElement('input');
-    input.type = def.type === 'number' ? 'number' : 'text';
+    input.type = def.type === 'checkbox' ? 'checkbox' : (def.type === 'number' ? 'number' : 'text');
     if(def.step !== undefined) input.step = def.step;
     if(def.min !== undefined) input.min = def.min;
     if(def.max !== undefined) input.max = def.max;
@@ -333,10 +334,27 @@ function buildParamField(node, def){
   input.className = 'param-input';
   input.dataset.param = def.key;
   const currentVal = node.params?.[def.key];
-  input.value = currentVal !== undefined ? currentVal : (def.default ?? '');
-  const updateValue = () => { node.params[def.key] = input.value; };
-  input.addEventListener(def.type === 'select' ? 'change' : 'input', updateValue);
-  wrap.appendChild(input);
+  if(def.type === 'checkbox'){
+    const isChecked = currentVal !== undefined
+      ? ['1','true','yes','y'].includes(String(currentVal).toLowerCase())
+      : !!def.default;
+    input.checked = isChecked;
+  } else {
+    input.value = currentVal !== undefined ? currentVal : (def.default ?? '');
+  }
+  if(inlineCheckbox){
+    label.classList.add('checkbox-label');
+    label.textContent = '';
+    label.appendChild(input);
+    label.appendChild(document.createTextNode(` ${def.label || def.key}`));
+  }
+  const updateValue = () => {
+    node.params[def.key] = def.type === 'checkbox' ? (input.checked ? 'true' : 'false') : input.value;
+  };
+  input.addEventListener((def.type === 'select' || def.type === 'checkbox') ? 'change' : 'input', updateValue);
+  if(!inlineCheckbox){
+    wrap.appendChild(input);
+  }
 
   if(def.help){
     const hint = document.createElement('small');

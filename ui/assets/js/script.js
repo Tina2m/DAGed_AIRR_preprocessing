@@ -16,6 +16,9 @@ const CHANNEL_MAP = {
   filter_trimqual: { consumes: ['R1','R2'], produces: ['R1','R2'] },
   filter_maskqual: { consumes: ['R1','R2'], produces: ['R1','R2'] },
   mask_primers: { consumes: ['R1','R2','PAIR1','PAIR2'], produces: ['R1','R2','PAIR1','PAIR2'] },
+  mask_primers_score: { consumes: ['R1','R2','PAIR1','PAIR2','ASSEMBLED'], produces: ['R1','R2','PAIR1','PAIR2','ASSEMBLED'] },
+  mask_primers_align: { consumes: ['R1','R2','PAIR1','PAIR2','ASSEMBLED'], produces: ['R1','R2','PAIR1','PAIR2','ASSEMBLED'] },
+  mask_primers_extract: { consumes: ['R1','R2','PAIR1','PAIR2','ASSEMBLED'], produces: ['R1','R2','PAIR1','PAIR2','ASSEMBLED'] },
   pairseq: { consumes: ['R1','R2'], produces: ['PAIR1','PAIR2'] },
   assemble_align: { consumes: ['PAIR1','PAIR2'], produces: ['ASSEMBLED'] },
   assemble_join: { consumes: ['PAIR1','PAIR2'], produces: ['ASSEMBLED'] },
@@ -32,7 +35,10 @@ const CATEGORIES = {
     "filter_repeats","filter_trimqual","filter_maskqual"
   ],
   "Tecnical processing(Primers)": [
-    "mask_primers"
+    "mask_primers",
+    "mask_primers_score",
+    "mask_primers_align",
+    "mask_primers_extract"
   ],
   "Pairing & Assembly": [
     "pairseq","assemble_align","assemble_join","assemble_sequential"
@@ -107,6 +113,24 @@ function setRunStatus(text) {
 function setProgress(current, total) {
   const percentage = total ? Math.round((current / total) * 100) : 0;
   $('#run-bar').style.width = percentage + '%';
+}
+
+function setButtonRunning(button, isRunning, label) {
+  if (!button) {
+    return;
+  }
+  if (isRunning) {
+    if (!button.dataset.defaultLabel) {
+      button.dataset.defaultLabel = button.textContent;
+    }
+    button.textContent = label || 'Running...';
+    button.disabled = true;
+  } else {
+    if (button.dataset.defaultLabel) {
+      button.textContent = button.dataset.defaultLabel;
+    }
+    button.disabled = false;
+  }
 }
 
 function setUploadReadsStatus(text, tone = 'info') {
@@ -236,6 +260,7 @@ async function uploadAux() {
   const data = await response.json();
   $('#aux-out').textContent = `Stored as: ${data.stored_as}` +
     (data.role && data.role !== 'other' ? ` (auto as ${data.role})` : '');
+  await refreshState();
   // auto-fill in MaskPrimers cards
   if (data.role === 'v_primers' || data.role === 'other') {
     $$('.unit-card[data-unit="mask_primers"] input[name="v_primers_fname"]').forEach(el => {
@@ -250,6 +275,15 @@ async function uploadAux() {
         el.value = data.stored_as;
       }
     });
+  }
+  if (data.role) {
+    $$('.unit-card[data-unit="mask_primers_score"], .unit-card[data-unit="mask_primers_align"]')
+      .forEach(card => {
+        const select = card.querySelector('select[name="primer_fname"]');
+        if (select && !select.value) {
+          select.value = data.stored_as;
+        }
+      });
   }
 }
 
@@ -336,6 +370,51 @@ function fillDagSelect(select, files){
 function refreshDagFileSelects(){
   const files = availableDagFiles();
   document.querySelectorAll('.dag-file-select').forEach(select => fillDagSelect(select, files));
+}
+
+function collectAuxFiles(state){
+  const names = [];
+  const seen = new Set();
+  const auxFiles = state?.aux_files || [];
+  auxFiles.forEach(name => {
+    if(name && !seen.has(name)){
+      seen.add(name);
+      names.push(name);
+    }
+  });
+  const aux = state?.aux || {};
+  Object.values(aux).forEach(name => {
+    if(name && !seen.has(name)){
+      seen.add(name);
+      names.push(name);
+    }
+  });
+  return names;
+}
+
+function updatePrimerSelects(state){
+  const options = collectAuxFiles(state);
+  const selects = document.querySelectorAll(
+    '.unit-card[data-unit="mask_primers_score"] select[name="primer_fname"],' +
+    '.unit-card[data-unit="mask_primers_align"] select[name="primer_fname"]'
+  );
+  selects.forEach(select => {
+    const current = select.value;
+    select.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'choose...';
+    select.appendChild(placeholder);
+    options.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      select.appendChild(opt);
+    });
+    if(current && Array.from(select.options).some(opt => opt.value === current)){
+      select.value = current;
+    }
+  });
 }
 
 function determineDagBranch(meta, selections){
@@ -489,6 +568,7 @@ async function refreshState() {
   $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
   window.__SESSION_STATE__ = state;
   refreshDagFileSelects();
+  updatePrimerSelects(state);
 }
 
 /* -------------------- New grouped render -------------------- */
@@ -504,8 +584,20 @@ function makeUnitCard(u){
       const help = v.help ? ` <span class="muted">— ${esc(v.help)}</span>` : '';
       const label = `<label>${esc(k)}${help}</label>`;
       if (v.type === 'select') {
-        const opts = (v.options||[]).map(o => `<option value="${esc(o)}" ${o===v.default?'selected':''}>${esc(o)}</option>`).join('');
+        const opts = (v.options||[]).map(o => {
+          if (typeof o === 'string') {
+            const selected = o === v.default ? 'selected' : '';
+            return `<option value="${esc(o)}" ${selected}>${esc(o)}</option>`;
+          }
+          const value = o?.value ?? '';
+          const labelText = o?.label ?? value;
+          const selected = value === v.default ? 'selected' : '';
+          return `<option value="${esc(value)}" ${selected}>${esc(labelText)}</option>`;
+        }).join('');
         inner += `${label}<select name="${esc(k)}">${opts}</select>`;
+      } else if (v.type === 'checkbox') {
+        const checked = v.default ? 'checked' : '';
+        inner += `<label class="checkbox-label"><input type="checkbox" name="${esc(k)}" ${checked}> ${esc(k)}${help}</label>`;
       } else if (v.type === 'file') {
         inner += `${label}<input name="${esc(k)}" placeholder="${esc(v.accept||'')}" />` +
                  `<div class="muted">Upload in section 1 → aux; I'll fill this automatically.</div>`;
@@ -532,7 +624,15 @@ function makeUnitCard(u){
       <button type="button" class="secondary pipe-add" data-unit-id="${esc(u.id)}" aria-pressed="false">Add to pipeline</button>
     </div>`;
 
-  card.querySelector('.run').addEventListener('click', ()=>runUnit(card,u.id));
+  card.querySelector('.run').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    setButtonRunning(button, true, 'Running...');
+    try {
+      await runUnit(card, u.id);
+    } finally {
+      setButtonRunning(button, false);
+    }
+  });
   const btn = card.querySelector('.pipe-add');
   btn.addEventListener('click', () => {
     const unitId = btn.dataset.unitId || card.dataset.unit;
@@ -662,7 +762,9 @@ function syncDagMetaFromUnits(units) {
         params: Object.entries(unit.params_schema || {}).map(([key, val]) => ({
           key,
           label: val.label || key,
-          type: val.type === 'select' ? 'select' : (val.type === 'number' || val.type === 'int' ? 'number' : 'text'),
+          type: val.type === 'select' ? 'select'
+            : (val.type === 'checkbox' ? 'checkbox'
+              : (val.type === 'number' || val.type === 'int' ? 'number' : 'text')),
           options: val.options || [],
           default: val.default,
           min: val.min,
@@ -725,6 +827,17 @@ function validateDagPipeline(dagApi){
 
 function validateMaskPrimers(step){
   const paramsSnapshot = step.params || (step.card ? collectParams(step.card) : {});
+  const unitId = (step.unit || '').toLowerCase();
+  if(unitId === 'mask_primers_score' || unitId === 'mask_primers_align'){
+    const primerValue = (paramsSnapshot.primer_fname || '').trim();
+    const aux = (window.__SESSION_STATE__ && window.__SESSION_STATE__.aux) || {};
+    const ok = primerValue.length > 0 || !!aux?.v_primers || !!aux?.c_primers;
+    const label = unitId === 'mask_primers_align' ? 'MaskPrimers align' : 'MaskPrimers score';
+    return ok ? {ok:true,msg:`${label}: OK`} : {ok:false,msg:`${label} needs a primer file (upload aux or fill filename).`};
+  }
+  if(unitId === 'mask_primers_extract'){
+    return {ok:true,msg:'MaskPrimers extract: OK'};
+  }
   const variant = (paramsSnapshot.variant || 'align').toLowerCase();
   if(variant === 'align' || variant === 'score'){
     const vValue = (paramsSnapshot.v_primers_fname || '').trim();
@@ -769,7 +882,7 @@ function validatePipeline(){
   }
   for(const st of bulkSteps){
     let res = {ok:true,msg:'OK'};
-    if(st.unit === 'mask_primers') res = validateMaskPrimers(st);
+    if(st.unit === 'mask_primers' || st.unit === 'mask_primers_score' || st.unit === 'mask_primers_align' || st.unit === 'mask_primers_extract') res = validateMaskPrimers(st);
     else if(st.unit.startsWith('assemble_')) res = validateAssemble(st);
     else if(st.unit === 'build_consensus') res = validateConsensus(st);
     okAll = okAll && res.ok;
@@ -956,7 +1069,15 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#upload')?.addEventListener('click', uploadReads);
   $('#upload-aux')?.addEventListener('click', uploadAux);
   $('#pipe-validate')?.addEventListener('click', validatePipeline);
-  $('#pipe-run')?.addEventListener('click', runPipeline);
+  $('#pipe-run')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    setButtonRunning(button, true, 'Running...');
+    try {
+      await runPipeline();
+    } finally {
+      setButtonRunning(button, false);
+    }
+  });
   $('#pipe-clear')?.addEventListener('click', ()=>{
     PIPELINE = [];
     PIPELINE_SEQ = 0;
