@@ -834,12 +834,57 @@ class U_PairSeq(UnitSpec):
         r1 = sdir / sess.artifacts[sess.current["R1"]].path
         r2 = sdir / sess.artifacts[sess.current["R2"]].path
         coord = params.get("coord","illumina")
+        outname = (params.get("outname") or "PAIRED").strip() or "PAIRED"
+        outdir_param = (params.get("outdir") or "").strip()
+        outbase_dir = sdir
+        if outdir_param:
+            if os.path.isabs(outdir_param):
+                raise HTTPException(400, "outdir must be a relative path within the session.")
+            outbase_dir = (sdir / outdir_param).resolve()
+            if not str(outbase_dir).startswith(str(sdir.resolve())):
+                raise HTTPException(400, "outdir must be within the session directory.")
+            outbase_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = ["PairSeq.py","-1",str(r1),"-2",str(r2),"--coord",coord,"--outname",outname]
+        if outdir_param:
+            cmd += ["--outdir", str(outbase_dir)]
+        if str(params.get("failed","false")).lower() in ("1","true","yes","y"):
+            cmd.append("--failed")
+        if str(params.get("fasta","false")).lower() in ("1","true","yes","y"):
+            cmd.append("--fasta")
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+        fields_1 = (params.get("fields_1") or "").strip()
+        if fields_1:
+            cmd += ["--1f"] + [p for p in fields_1.replace(",", " ").split() if p]
+        fields_2 = (params.get("fields_2") or "").strip()
+        if fields_2:
+            cmd += ["--2f"] + [p for p in fields_2.replace(",", " ").split() if p]
+        act = (params.get("act") or "").strip()
+        if act:
+            cmd += ["--act", act]
+
         # PairSeq.py does not accept --log; run_cmd will still capture stdout/stderr in log_file
-        run_cmd(["PairSeq.py","-1",str(r1),"-2",str(r2),"--coord",coord,"--outname","PAIRED"], sdir, log)
-        a1 = Artifact(name="PAIR1", path="PAIRED-1_pair-pass.fastq.gz", kind="fastq", channel="PAIR1", from_step=idx)
-        a2 = Artifact(name="PAIR2", path="PAIRED-2_pair-pass.fastq.gz", kind="fastq", channel="PAIR2", from_step=idx)
-        if not (sdir / a1.path).exists(): a1.path = "PAIRED-1_pair-pass.fastq"
-        if not (sdir / a2.path).exists(): a2.path = "PAIRED-2_pair-pass.fastq"
+        run_cmd(cmd, sdir, log)
+        a1_name = f"{outname}-1_pair-pass.fastq.gz"
+        a2_name = f"{outname}-2_pair-pass.fastq.gz"
+        a1_path = outbase_dir / a1_name
+        a2_path = outbase_dir / a2_name
+        if not a1_path.exists():
+            a1_name = f"{outname}-1_pair-pass.fastq"
+            a1_path = outbase_dir / a1_name
+        if not a2_path.exists():
+            a2_name = f"{outname}-2_pair-pass.fastq"
+            a2_path = outbase_dir / a2_name
+        if not a1_path.exists() or not a2_path.exists():
+            raise RuntimeError(f"Expected PairSeq outputs not found for prefix '{outname}'.")
+        rel_base = pathlib.Path(outdir_param) if outdir_param else pathlib.Path("")
+        a1 = Artifact(name="PAIR1", path=str(rel_base / a1_name), kind="fastq", channel="PAIR1", from_step=idx)
+        a2 = Artifact(name="PAIR2", path=str(rel_base / a2_name), kind="fastq", channel="PAIR2", from_step=idx)
         sess.artifacts[a1.name] = a1; sess.artifacts[a2.name] = a2
         sess.current["PAIR1"] = a1.name; sess.current["PAIR2"] = a2.name
         return StepResult(step_index=idx, unit=self.id, params=params, produced=[a1,a2])
@@ -939,24 +984,65 @@ class U_BuildConsensus(UnitSpec):
         key = sess.current.get("ASSEMBLED") or sess.current.get("R1")
         if not key: raise HTTPException(400, "BuildConsensus needs a FASTQ/FASTA (assembled or R1).")
         src = sdir / sess.artifacts[key].path
-        outprefix = "CONS"
+        outdir_param = (params.get("outdir") or "").strip()
+        outbase_dir = sdir
+        if outdir_param:
+            if os.path.isabs(outdir_param):
+                raise HTTPException(400, "outdir must be a relative path within the session.")
+            outbase_dir = (sdir / outdir_param).resolve()
+            if not str(outbase_dir).startswith(str(sdir.resolve())):
+                raise HTTPException(400, "outdir must be within the session directory.")
+            outbase_dir.mkdir(parents=True, exist_ok=True)
+
+        outprefix = (params.get("outname") or "CONS").strip() or "CONS"
         cmd = ["BuildConsensus.py","-s",str(src),"--outname",outprefix,"--log",log.name]
-        # optional
-        if params.get("qmin"):    cmd += ["-q", str(params["qmin"])]
-        if params.get("freq"):    cmd += ["--freq", str(params["freq"])]
-        if params.get("maxgap"):  cmd += ["--maxgap", str(params["maxgap"])]
-        if params.get("act"):
-            acts = str(params["act"]).split(",")
-            cmd += ["--act"] + acts
+        if outdir_param:
+            cmd += ["--outdir", str(outbase_dir)]
+        if str(params.get("failed","false")).lower() in ("1","true","yes","y"):
+            cmd += ["--failed"]
+        if str(params.get("fasta","false")).lower() in ("1","true","yes","y"):
+            cmd += ["--fasta"]
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+        if params.get("min_count"):
+            cmd += ["-n", str(params["min_count"])]
+        if params.get("barcode_field"):
+            cmd += ["--bf", str(params["barcode_field"])]
+        if params.get("qmin"):
+            cmd += ["-q", str(params["qmin"])]
+        if params.get("freq"):
+            cmd += ["--freq", str(params["freq"])]
+        if params.get("maxgap"):
+            cmd += ["--maxgap", str(params["maxgap"])]
+        if params.get("primer_field"):
+            cmd += ["--pf", str(params["primer_field"])]
+        if params.get("primer_freq"):
+            cmd += ["--prcons", str(params["primer_freq"])]
+        copy_fields = (params.get("copy_fields") or "").strip()
+        if copy_fields:
+            cmd += ["--cf"] + [x.strip() for x in copy_fields.replace(",", " ").split() if x.strip()]
+        act = (params.get("act") or "").strip()
+        if act:
+            cmd += ["--act"] + [x.strip() for x in act.replace(",", " ").split() if x.strip()]
         if str(params.get("dep","false")).lower() in ("1","true","yes","y"):
             cmd += ["--dep"]
-        # exclusive maxdiv / maxerror
-        if params.get("maxdiv"):   cmd += ["--maxdiv", str(params["maxdiv"])]
-        elif params.get("maxerror"): cmd += ["--maxerror", str(params["maxerror"])]
+        if params.get("maxdiv") and params.get("maxerror"):
+            raise HTTPException(400, "Choose either maxdiv or maxerror (mutually exclusive).")
+        if params.get("maxdiv"):
+            cmd += ["--maxdiv", str(params["maxdiv"])]
+        if params.get("maxerror"):
+            cmd += ["--maxerror", str(params["maxerror"])]
+
         run_cmd(cmd, sdir, log)
         # BuildConsensus creates multiple outputs; keep the consensus-pass.* as representative
-        out = find_pass_for_prefix(sdir, f"{outprefix}_consensus")
-        a = Artifact(name="CONSENSUS", path=out, kind="fastq", from_step=idx)
+        out = find_pass_for_prefix(outbase_dir, f"{outprefix}_consensus")
+        rel_base = pathlib.Path(outdir_param) if outdir_param else pathlib.Path("")
+        kind = _detect_kind_from_name(out) or "fastq"
+        a = Artifact(name="CONSENSUS", path=str(rel_base / out), kind=kind, from_step=idx)
         sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=[a])
     
@@ -1642,7 +1728,17 @@ UNITS: Dict[str, UnitSpec] = {
     ),
     "pairseq": U_PairSeq(
         id="pairseq", label="PairSeq", requires=["R1","R2"], group="bulk",
-        params_schema={"coord":{"type":"select","options":["illumina","solexa","sra","454","presto"],"default":"illumina"}}
+        params_schema={
+            "outdir":{"type":"text","label":"Outdir","placeholder":"relative folder (optional)"},
+            "outname":{"type":"text","label":"Outname","default":"PAIRED"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "fields_1":{"type":"text","label":"Fields 1","placeholder":"ID QUAL"},
+            "fields_2":{"type":"text","label":"Fields 2","placeholder":"ID QUAL"},
+            "act":{"type":"select","options":["","min","max","sum","set","cat"],"default":""},
+            "coord":{"type":"select","options":["illumina","solexa","sra","454","presto"],"default":"illumina"},
+        }
     ),
     "assemble_align": U_AssembleAlign(
         id="assemble_align", label="AssemblePairs: align", requires=["PAIR1","PAIR2"],
@@ -1691,11 +1787,21 @@ UNITS: Dict[str, UnitSpec] = {
     "build_consensus": U_BuildConsensus(
         id="build_consensus", label="BuildConsensus", requires=[], group="bulk",
         params_schema={
+            "outdir":{"type":"text","label":"Outdir","placeholder":"relative folder (optional)"},
+            "outname":{"type":"text","label":"Outname","default":"CONS"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "min_count":{"type":"int","label":"Min count","min":1},
+            "barcode_field":{"type":"text","label":"Barcode field","placeholder":"BARCODE"},
             "qmin":{"type":"text","placeholder":"min quality"},
             "freq":{"type":"text","placeholder":"min freq"},
             "maxgap":{"type":"text","placeholder":"0..1"},
+            "primer_field":{"type":"text","label":"Primer field","placeholder":"PRIMER"},
+            "primer_freq":{"type":"text","placeholder":"e.g. 0.7"},
+            "copy_fields":{"type":"text","placeholder":"field1 field2"},
             "act":{"type":"text","placeholder":"min,max,sum,set,majority (comma sep)"},
-            "dep":{"type":"select","options":["false","true"],"default":"false"},
+            "dep":{"type":"checkbox","default":False},
             "maxdiv":{"type":"text","placeholder":"e.g. 0.05"},
             "maxerror":{"type":"text","placeholder":"e.g. 0.05"},
         }
