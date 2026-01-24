@@ -502,89 +502,6 @@ class U_FilterMaskQual(UnitSpec):
         for a in produced: sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
-# MaskPrimers combined
-class U_MaskPrimers(UnitSpec):
-    def run(self, sess, sdir, params):
-        idx = _next_idx(sess)
-        variant = params.get("variant","align")
-        mode = params.get("mode","mask")
-        score_maxerror = params.get("score_maxerror")
-        log = sdir / f"{idx:03d}_MaskPrimers_{variant}.log"
-
-        _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
-        produced: List[Artifact] = []
-
-        if variant in ("align","score"):
-            v_name = params.get("v_primers_fname") or load_state(sdir).aux.get("v_primers")
-            if not v_name:
-                raise HTTPException(400, "v_primers_fname is required for align/score.")
-            v_fa = sdir / v_name
-            cmd = ["MaskPrimers.py", variant, "-s", str(r1), "-p", str(v_fa),
-                   "--mode", mode, "--pf", "VPRIMER", "--outname", "R1", "--log", log.name]
-            if variant == "score" and score_maxerror not in (None, ""):
-                cmd += ["--maxerror", str(score_maxerror)]
-            if str(params.get("revpr","false")).lower() in ("1","true","yes","y"):
-                cmd.append("--revpr")
-            run_cmd(cmd, sdir, log)
-            try:
-                out_r1 = find_pass_for_prefix(sdir, "R1")
-            except HTTPException:
-                raise RuntimeError(_maskprimers_no_output_message(log))
-            produced.append(Artifact(name="R1_masked", path=out_r1, kind="fastq", channel="R1", from_step=idx))
-            sess.current["R1"] = "R1_masked"
-
-            if sess.current.get("R2"):
-                c_name = params.get("c_primers_fname") or load_state(sdir).aux.get("c_primers")
-                if c_name:
-                    r2 = sdir / sess.artifacts[sess.current["R2"]].path
-                    c_fa = sdir / c_name
-                    cmd2 = ["MaskPrimers.py", variant, "-s", str(r2), "-p", str(c_fa),
-                            "--mode", mode, "--pf", "CPRIMER", "--outname", "R2", "--log", log.name]
-                    if variant == "score" and score_maxerror not in (None, ""):
-                        cmd2 += ["--maxerror", str(score_maxerror)]
-                    if str(params.get("revpr","false")).lower() in ("1","true","yes","y"):
-                        cmd2.append("--revpr")
-                    run_cmd(cmd2, sdir, log)
-                    try:
-                        out_r2 = find_pass_for_prefix(sdir, "R2")
-                    except HTTPException:
-                        raise RuntimeError(_maskprimers_no_output_message(log))
-                    produced.append(Artifact(name="R2_masked", path=out_r2, kind="fastq", channel="R2", from_step=idx))
-                    sess.current["R2"] = "R2_masked"
-
-        elif variant == "extract":
-            try:
-                start = int(params.get("start")); length = int(params.get("length"))
-            except Exception:
-                raise HTTPException(400, "extract requires integer 'start' and 'length'.")
-            cmd = ["MaskPrimers.py","extract","-s",str(r1),"--start",str(start),"--len",str(length),
-                   "--mode",mode,"--pf","EXTRACT","--outname","R1","--log",log.name]
-            run_cmd(cmd, sdir, log)
-            try:
-                out_r1 = find_pass_for_prefix(sdir, "R1")
-            except HTTPException:
-                raise RuntimeError(_maskprimers_no_output_message(log))
-            produced.append(Artifact(name="R1_extracted", path=out_r1, kind="fastq", channel="R1", from_step=idx))
-            sess.current["R1"] = "R1_extracted"
-
-            if sess.current.get("R2"):
-                r2 = sdir / sess.artifacts[sess.current["R2"]].path
-                cmd2 = ["MaskPrimers.py","extract","-s",str(r2),"--start",str(start),"--len",str(length),
-                        "--mode",mode,"--pf","EXTRACT","--outname","R2","--log",log.name]
-                run_cmd(cmd2, sdir, log)
-                try:
-                    out_r2 = find_pass_for_prefix(sdir, "R2")
-                except HTTPException:
-                    raise RuntimeError(_maskprimers_no_output_message(log))
-                produced.append(Artifact(name="R2_extracted", path=out_r2, kind="fastq", channel="R2", from_step=idx))
-                sess.current["R2"] = "R2_extracted"
-        else:
-            raise HTTPException(400, f"Unsupported variant '{variant}'. Choose from align, score, extract.")
-
-        for a in produced: sess.artifacts[a.name] = a
-        print(("step_index=",idx, "unit=", self.id, "params=", params, "produced=", produced))
-        return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
-
 class U_MaskPrimersScore(UnitSpec):
     def run(self, sess, sdir, params):
         idx = _next_idx(sess)
@@ -1651,19 +1568,6 @@ UNITS: Dict[str, UnitSpec] = {
     "filter_maskqual": U_FilterMaskQual(
         id="filter_maskqual", label="FilterSeq: maskqual", requires=["R1"], group="bulk",
         params_schema={"qmin":{"type":"int","default":20,"min":0,"max":40}}
-    ),
-    "mask_primers": U_MaskPrimers(
-        id="mask_primers", label="MaskPrimers", requires=["R1"], group="bulk",
-        params_schema={
-            "variant":{"type":"select","options":["align","score","extract"],"default":"align"},
-            "mode":{"type":"select","options":["cut","mask","trim","tag"],"default":"mask"},
-            "score_maxerror":{"type":"text","label":"Score max error","placeholder":"e.g. 0.1","optional":True,"help":"Only used for score variant"},
-            "v_primers_fname":{"type":"file","accept":".fa,.fasta","help":"Optional if V primers uploaded in section 1"},
-            "c_primers_fname":{"type":"file","accept":".fa,.fasta","optional":True,"help":"Optional if C primers uploaded"},
-            "start":{"type":"int","default":0,"min":0},
-            "length":{"type":"int","default":30,"min":1},
-            "revpr":{"type":"checkbox","default":False},
-        }
     ),
     "mask_primers_score": U_MaskPrimersScore(
         id="mask_primers_score", label="MaskPrimers: score", requires=[], group="bulk",
