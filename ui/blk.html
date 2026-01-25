@@ -107,7 +107,7 @@
     }
   </style>
 </head>
-<body class="mode-single">
+<body>
   <script>
     // tell nav to highlight this page
     document.documentElement.setAttribute('data-active', 'bulk');
@@ -153,7 +153,7 @@
         <div id="unit-groups" class="unit-groups"></div>
 
         <h2>Run pipeline</h2>
-        <p class="muted">Use the panel on the right to choose single-end (linear) or paired-end (DAG) layout, then run from here.</p>
+        <p class="muted">Build a linear flow on the right, then run it from here.</p>
         <div class="row mb8">
           <button id="pipe-validate" class="secondary">Validate</button>
           <button id="pipe-run">Run pipeline</button>
@@ -177,37 +177,8 @@
         <h2>Pipeline overview</h2>
         <div class="muted">Configure structure and monitor progress.</div>
 
-        <div class="mode-toggle" role="group" aria-label="Workflow mode">
-          <label class="pill-input">
-            <input type="radio" name="bulk-mode" value="single" checked>
-            Single-end
-          </label>
-          <label class="pill-input">
-            <input type="radio" name="bulk-mode" value="paired">
-            Paired-end
-          </label>
-          <span id="mode-note" class="muted">Single-end: build a linear flow with Add to pipeline.</span>
-        </div>
-
-        <div class="dag-only">
-          <h3 class="mt8">Paired-end builder</h3>
-          <p class="muted">Arrange nodes on each branch, then connect outputs to downstream steps.</p>
-          <section class="panel dag-shell">
-            <div class="graph-panel">
-              <div class="graph-columns">
-                <div id="graph-r1" class="graph-col"></div>
-                <div id="graph-r2" class="graph-col"></div>
-                <div id="graph-merge" class="graph-col"></div>
-              </div>
-              <div id="graph-edges" class="edges-panel"></div>
-            </div>
-          </section>
-        </div>
-
-        <div class="linear-only">
-          <h3 class="mt8">Flow</h3>
-          <div id="flow" class="flow"></div>
-        </div>
+        <h3 class="mt8">Flow</h3>
+        <div id="flow" class="flow"></div>
 
         <h3 class="mt8">Validation</h3>
         <div id="validation" class="muted">—</div>
@@ -215,23 +186,10 @@
         <h3 class="mt8">Run status</h3>
         <div id="run-status" class="muted">—</div>
         <div class="progress"><div id="run-bar" class="bar"></div></div>
-        <div class="branch-progress dag-only">
-          <div class="branch-progress-row" data-branch="R1">
-            <div class="branch-progress-label">R1</div>
-            <div class="progress branch-progress-bar"><div id="branch-bar-R1" class="bar"></div></div>
-            <span id="branch-status-R1" class="branch-progress-status">No nodes</span>
-          </div>
-          <div class="branch-progress-row" data-branch="R2">
-            <div class="branch-progress-label">R2</div>
-            <div class="progress branch-progress-bar"><div id="branch-bar-R2" class="bar"></div></div>
-            <span id="branch-status-R2" class="branch-progress-status">No nodes</span>
-          </div>
-        </div>
       </div>
     </aside>
   </div>
 
   <script defer src="assets/js/script.js?v=20250310"></script>
-  <script type="module" src="assets/js/bulk.js?v=20250322"></script>
 </body>
 </html>

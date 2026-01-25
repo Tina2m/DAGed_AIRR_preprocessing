@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 # --------- sanity: ensure pRESTO tools exist on PATH ----------
 import shutil as _shutil
-_needed = ["FilterSeq.py","MaskPrimers.py","PairSeq.py","AssemblePairs.py","ParseLog.py","CollapseSeq.py","BuildConsensus.py"]
+_needed = ["FilterSeq.py","MaskPrimers.py","CollapseSeq.py","BuildConsensus.py"]
 _missing = [t for t in _needed if not _shutil.which(t)]
 if _missing:
     raise RuntimeError(f"pRESTO tools not found on PATH: {', '.join(_missing)}")
@@ -48,7 +48,7 @@ class Artifact(BaseModel):
     name: str
     path: str
     kind: Literal["fastq","fasta","tab","log","other"] = "other"
-    channel: Optional[Literal["R1","R2","PAIR1","PAIR2","ASSEMBLED"]] = None
+    channel: Optional[Literal["R1","R2"]] = None
     from_step: int
 
 class StepResult(BaseModel):
@@ -120,8 +120,8 @@ def run_cmd(cmd: List[str], cwd: pathlib.Path, log_file: pathlib.Path):
     nproc = os.cpu_count() or 2
     tool = pathlib.Path(cmd[0]).name
     NPROC_TOOLS = {
-        "FilterSeq.py", "MaskPrimers.py", "PairSeq.py",
-        "AssemblePairs.py", "CollapseSeq.py", "BuildConsensus.py",
+        "FilterSeq.py", "MaskPrimers.py",
+        "CollapseSeq.py", "BuildConsensus.py",
     }
     final_cmd = list(cmd)
     print('CMD:',final_cmd)
@@ -230,7 +230,7 @@ def find_pass_for_prefix(sess_dir: pathlib.Path, prefix: str) -> str:
     for ext in ("fastq.gz","fastq","fasta.gz","fasta"):
         for tag in ("mask-pass","align-primers-pass","primers-pass","extract-pass","score-pass", "quality-pass",
                     "length-pass","missing-pass","repeats-pass","trimqual-pass","maskqual-pass",
-                    "assemble-pass","collapse-pass"):
+                    "collapse-pass"):
             p = sess_dir / f"{prefix}_{tag}.{ext}"
             if p.exists(): return p.name
     raise HTTPException(500, f"Expected output not found for prefix '{prefix}'.")
@@ -274,14 +274,6 @@ def _default_outname_from_path(path: pathlib.Path) -> str:
 
 def _guess_channel_from_name(name: str) -> Optional[str]:
     upper = name.upper()
-    if "PAIR1" in upper:
-        return "PAIR1"
-    if "PAIR2" in upper:
-        return "PAIR2"
-    if "ASSEMBLED" in upper:
-        return "ASSEMBLED"
-    if "MERGED" in upper:
-        return "MERGED"
     if "R2" in upper:
         return "R2"
     if "R1" in upper:
@@ -743,148 +735,12 @@ class U_MaskPrimersExtract(UnitSpec):
 
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
-# Pairing & Assembly
-class U_PairSeq(UnitSpec):
-    def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_PairSeq.log"
-        _assert_channel(sess,"R1"); _assert_channel(sess,"R2")
-        r1 = sdir / sess.artifacts[sess.current["R1"]].path
-        r2 = sdir / sess.artifacts[sess.current["R2"]].path
-        coord = params.get("coord","illumina")
-        outname = (params.get("outname") or "PAIRED").strip() or "PAIRED"
-        outdir_param = (params.get("outdir") or "").strip()
-        outbase_dir = sdir
-        if outdir_param:
-            if os.path.isabs(outdir_param):
-                raise HTTPException(400, "outdir must be a relative path within the session.")
-            outbase_dir = (sdir / outdir_param).resolve()
-            if not str(outbase_dir).startswith(str(sdir.resolve())):
-                raise HTTPException(400, "outdir must be within the session directory.")
-            outbase_dir.mkdir(parents=True, exist_ok=True)
-
-        cmd = ["PairSeq.py","-1",str(r1),"-2",str(r2),"--coord",coord,"--outname",outname]
-        if outdir_param:
-            cmd += ["--outdir", str(outbase_dir)]
-        if str(params.get("failed","false")).lower() in ("1","true","yes","y"):
-            cmd.append("--failed")
-        if str(params.get("fasta","false")).lower() in ("1","true","yes","y"):
-            cmd.append("--fasta")
-        delim = (params.get("delim") or "").strip()
-        if delim:
-            parts = [p for p in delim.replace(",", " ").split() if p]
-            if len(parts) != 3:
-                raise HTTPException(400, "delim must contain exactly 3 values.")
-            cmd += ["--delim"] + parts
-        fields_1 = (params.get("fields_1") or "").strip()
-        if fields_1:
-            cmd += ["--1f"] + [p for p in fields_1.replace(",", " ").split() if p]
-        fields_2 = (params.get("fields_2") or "").strip()
-        if fields_2:
-            cmd += ["--2f"] + [p for p in fields_2.replace(",", " ").split() if p]
-        act = (params.get("act") or "").strip()
-        if act:
-            cmd += ["--act", act]
-
-        # PairSeq.py does not accept --log; run_cmd will still capture stdout/stderr in log_file
-        run_cmd(cmd, sdir, log)
-        a1_name = f"{outname}-1_pair-pass.fastq.gz"
-        a2_name = f"{outname}-2_pair-pass.fastq.gz"
-        a1_path = outbase_dir / a1_name
-        a2_path = outbase_dir / a2_name
-        if not a1_path.exists():
-            a1_name = f"{outname}-1_pair-pass.fastq"
-            a1_path = outbase_dir / a1_name
-        if not a2_path.exists():
-            a2_name = f"{outname}-2_pair-pass.fastq"
-            a2_path = outbase_dir / a2_name
-        if not a1_path.exists() or not a2_path.exists():
-            raise RuntimeError(f"Expected PairSeq outputs not found for prefix '{outname}'.")
-        rel_base = pathlib.Path(outdir_param) if outdir_param else pathlib.Path("")
-        a1 = Artifact(name="PAIR1", path=str(rel_base / a1_name), kind="fastq", channel="PAIR1", from_step=idx)
-        a2 = Artifact(name="PAIR2", path=str(rel_base / a2_name), kind="fastq", channel="PAIR2", from_step=idx)
-        sess.artifacts[a1.name] = a1; sess.artifacts[a2.name] = a2
-        sess.current["PAIR1"] = a1.name; sess.current["PAIR2"] = a2.name
-        return StepResult(step_index=idx, unit=self.id, params=params, produced=[a1,a2])
-
-class U_AssembleAlign(UnitSpec):
-    def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_AssemblePairs_align.log"
-        for ch in ("PAIR1","PAIR2"):
-            if ch not in sess.current:
-                raise HTTPException(400, "AssemblePairs requires PAIR1 and PAIR2 (run PairSeq first).")
-        p1 = sdir / sess.artifacts[sess.current["PAIR1"]].path
-        p2 = sdir / sess.artifacts[sess.current["PAIR2"]].path
-        coord = params.get("coord","illumina")
-        rc = params.get("rc","tail")
-        cmd = ["AssemblePairs.py","align","-1",str(p1),"-2",str(p2),"--coord",coord,"--rc",rc,
-               "--outname","ASSEMBLED","--log",log.name]
-        # optional de-novo tuning
-        if params.get("alpha"):    cmd += ["--alpha", str(params["alpha"])]
-        if params.get("maxerror"): cmd += ["--maxerror", str(params["maxerror"])]
-        if params.get("minlen"):   cmd += ["--minlen", str(params["minlen"])]
-        if params.get("maxlen"):   cmd += ["--maxlen", str(params["maxlen"])]
-        run_cmd(cmd, sdir, log)
-        run_cmd(["ParseLog.py","-l",log.name,"-f","ID","LENGTH","OVERLAP","ERROR","PVALUE","--outname","AP"], sdir, log)
-        a = Artifact(name="ASSEMBLED", path="ASSEMBLED_assemble-pass.fastq.gz", kind="fastq", channel="ASSEMBLED", from_step=idx)
-        if not (sdir / a.path).exists(): a.path = "ASSEMBLED_assemble-pass.fastq"
-        t = Artifact(name="AP_table", path="AP_table.tab", kind="tab", from_step=idx)
-        sess.artifacts[a.name] = a; sess.artifacts[t.name] = t; sess.current["ASSEMBLED"] = a.name
-        return StepResult(step_index=idx, unit=self.id, params=params, produced=[a,t])
-
-class U_AssembleJoin(UnitSpec):
-    def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_AssemblePairs_join.log"
-        for ch in ("PAIR1","PAIR2"):
-            if ch not in sess.current:
-                raise HTTPException(400, "AssemblePairs join requires PAIR1 and PAIR2 (run PairSeq first).")
-        p1 = sdir / sess.artifacts[sess.current["PAIR1"]].path
-        p2 = sdir / sess.artifacts[sess.current["PAIR2"]].path
-        coord = params.get("coord","illumina")
-        rc = params.get("rc","tail")
-        cmd = ["AssemblePairs.py","join","-1",str(p1),"-2",str(p2),"--coord",coord,"--rc",rc,
-               "--outname","ASSEMBLED","--log",log.name]
-        if params.get("head_fields"): cmd += ["--1f"] + str(params["head_fields"]).split(",")
-        if params.get("tail_fields"): cmd += ["--2f"] + str(params["tail_fields"]).split(",")
-        if params.get("gap"): cmd += ["--gap", str(params["gap"])]
-        run_cmd(cmd, sdir, log)
-        a = Artifact(name="ASSEMBLED", path="ASSEMBLED_assemble-pass.fastq.gz", kind="fastq", channel="ASSEMBLED", from_step=idx)
-        if not (sdir / a.path).exists(): a.path = "ASSEMBLED_assemble-pass.fastq"
-        sess.artifacts[a.name] = a; sess.current["ASSEMBLED"] = a.name
-        return StepResult(step_index=idx, unit=self.id, params=params, produced=[a])
-
-class U_AssembleSequential(UnitSpec):
-    def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_AssemblePairs_sequential.log"
-        for ch in ("PAIR1","PAIR2"):
-            if ch not in sess.current:
-                raise HTTPException(400, "AssemblePairs sequential requires PAIR1 and PAIR2 (run PairSeq first).")
-        p1 = sdir / sess.artifacts[sess.current["PAIR1"]].path
-        p2 = sdir / sess.artifacts[sess.current["PAIR2"]].path
-        coord = params.get("coord","illumina"); rc = params.get("rc","tail")
-        cmd = ["AssemblePairs.py","sequential","-1",str(p1),"-2",str(p2),"--coord",coord,"--rc",rc,
-               "--outname","ASSEMBLED","--log",log.name]
-        if params.get("head_fields"): cmd += ["--1f"] + str(params["head_fields"]).split(",")
-        if params.get("tail_fields"): cmd += ["--2f"] + str(params["tail_fields"]).split(",")
-        for k,flag in (("alpha","--alpha"),("maxerror","--maxerror"),("minlen","--minlen"),("maxlen","--maxlen")):
-            if params.get(k): cmd += [flag, str(params[k])]
-        if str(params.get("scanrev","false")).lower() in ("1","true","yes","y"): cmd.append("--scanrev")
-        if params.get("ref_file"):  cmd += ["-r", str(params["ref_file"])]
-        if params.get("minident"):  cmd += ["--minident", str(params["minident"])]
-        if params.get("evalue"):    cmd += ["--evalue", str(params["evalue"])]
-        if params.get("maxhits"):   cmd += ["--maxhits", str(params["maxhits"])]
-        if params.get("aligner"):   cmd += ["--aligner", str(params["aligner"])]
-        run_cmd(cmd, sdir, log)
-        a = Artifact(name="ASSEMBLED", path="ASSEMBLED_assemble-pass.fastq.gz", kind="fastq", channel="ASSEMBLED", from_step=idx)
-        if not (sdir / a.path).exists(): a.path = "ASSEMBLED_assemble-pass.fastq"
-        sess.artifacts[a.name] = a; sess.current["ASSEMBLED"] = a.name
-        return StepResult(step_index=idx, unit=self.id, params=params, produced=[a])
-
 class U_CollapseSeq(UnitSpec):
     def run(self, sess, sdir, params):
         idx = _next_idx(sess); log = sdir / f"{idx:03d}_CollapseSeq.log"
-        # default: collapse what's "current": assembled if present else R1
-        key = sess.current.get("ASSEMBLED") or sess.current.get("R1")
-        if not key: raise HTTPException(400, "CollapseSeq needs a FASTQ to collapse (e.g., assembled or R1).")
+        # default: collapse what's "current": R1
+        key = sess.current.get("R1")
+        if not key: raise HTTPException(400, "CollapseSeq needs a FASTQ to collapse (e.g., R1).")
         src = sdir / sess.artifacts[key].path
         outname = params.get("outname","COLLAPSE")
         cmd = ["CollapseSeq.py","-s",str(src),"--outname",outname,"--log",log.name]
@@ -892,14 +748,14 @@ class U_CollapseSeq(UnitSpec):
         run_cmd(cmd, sdir, log)
         a = Artifact(name="COLLAPSED", path=f"{outname}_collapse-pass.fastq.gz", kind="fastq", from_step=idx)
         if not (sdir / a.path).exists(): a.path = f"{outname}_collapse-pass.fastq"
-        sess.artifacts[a.name] = a; sess.current["ASSEMBLED"] = a.name
+        sess.artifacts[a.name] = a; sess.current["R1"] = a.name
         return StepResult(step_index=idx, unit=self.id, params=params, produced=[a])
 
 class U_BuildConsensus(UnitSpec):
     def run(self, sess, sdir, params):
         idx = _next_idx(sess); log = sdir / f"{idx:03d}_BuildConsensus.log"
-        key = sess.current.get("ASSEMBLED") or sess.current.get("R1")
-        if not key: raise HTTPException(400, "BuildConsensus needs a FASTQ/FASTA (assembled or R1).")
+        key = sess.current.get("R1")
+        if not key: raise HTTPException(400, "BuildConsensus needs a FASTQ/FASTA (R1).")
         src = sdir / sess.artifacts[key].path
         outdir_param = (params.get("outdir") or "").strip()
         outbase_dir = sdir
@@ -1628,60 +1484,6 @@ UNITS: Dict[str, UnitSpec] = {
             "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
             "fasta":{"type":"checkbox","default":False},
             "failed":{"type":"checkbox","default":False},
-        }
-    ),
-    "pairseq": U_PairSeq(
-        id="pairseq", label="PairSeq", requires=["R1","R2"], group="bulk",
-        params_schema={
-            "outdir":{"type":"text","label":"Outdir","placeholder":"relative folder (optional)"},
-            "outname":{"type":"text","label":"Outname","default":"PAIRED"},
-            "failed":{"type":"checkbox","default":False},
-            "fasta":{"type":"checkbox","default":False},
-            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
-            "fields_1":{"type":"text","label":"Fields 1","placeholder":"ID QUAL"},
-            "fields_2":{"type":"text","label":"Fields 2","placeholder":"ID QUAL"},
-            "act":{"type":"select","options":["","min","max","sum","set","cat"],"default":""},
-            "coord":{"type":"select","options":["illumina","solexa","sra","454","presto"],"default":"illumina"},
-        }
-    ),
-    "assemble_align": U_AssembleAlign(
-        id="assemble_align", label="AssemblePairs: align", requires=["PAIR1","PAIR2"],
-        params_schema={
-            "coord":{"type":"select","options":["illumina","solexa","sra","454","presto"],"default":"illumina","help":"Coordinate scheme"},
-            "rc":{"type":"select","options":["tail","head","both","none"],"default":"tail","help":"Reverse complement policy"},
-            "alpha":{"type":"text","placeholder":"e.g. 0.5","help":"Significance threshold (de novo)"},
-            "maxerror":{"type":"text","placeholder":"e.g. 0.1","help":"Max error rate (de novo)"},
-            "minlen":{"type":"int","default":8,"help":"Min overlap length (de novo)"},
-            "maxlen":{"type":"int","default":100,"help":"Max overlap length (de novo)"},
-        }
-    ),
-    "assemble_join": U_AssembleJoin(
-        id="assemble_join", label="AssemblePairs: join", requires=["PAIR1","PAIR2"], group="bulk",
-        params_schema={
-            "coord":{"type":"select","options":["illumina","solexa","sra","454","presto"],"default":"illumina"},
-            "rc":{"type":"select","options":["tail","head","both","none"],"default":"tail"},
-            "head_fields":{"type":"text","placeholder":"ID,QUAL"},
-            "tail_fields":{"type":"text","placeholder":"ID,QUAL"},
-            "gap":{"type":"int","default":0}
-        }
-    ),
-    "assemble_sequential": U_AssembleSequential(
-        id="assemble_sequential", label="AssemblePairs: sequential", requires=["PAIR1","PAIR2"], group="bulk",
-        params_schema={
-            "coord":{"type":"select","options":["illumina","solexa","sra","454","presto"],"default":"illumina"},
-            "rc":{"type":"select","options":["tail","head","both","none"],"default":"tail"},
-            "head_fields":{"type":"text","placeholder":"ID,QUAL"},
-            "tail_fields":{"type":"text","placeholder":"ID,QUAL"},
-            "alpha":{"type":"text","placeholder":"e.g. 0.5"},
-            "maxerror":{"type":"text","placeholder":"e.g. 0.1"},
-            "minlen":{"type":"int","default":8},
-            "maxlen":{"type":"int","default":100},
-            "scanrev":{"type":"select","options":["false","true"],"default":"false"},
-            "ref_file":{"type":"text","placeholder":"reference.fasta"},
-            "minident":{"type":"text","placeholder":"0.9"},
-            "evalue":{"type":"text","placeholder":"1e-4"},
-            "maxhits":{"type":"int","default":5},
-            "aligner":{"type":"select","options":["blastn","usearch"],"default":"blastn"},
         }
     ),
     "collapse_seq": U_CollapseSeq(
