@@ -27,6 +27,9 @@
         '<a class="nav-link" data-key="bulk" href="/ui/blk.html">Bulk amplicon</a>',
         '<a class="nav-link" data-key="sc"   href="/ui/sc.html">Single-Cell AIRR</a>',
         '<a class="nav-link" data-key="docs" href="/ui/docs.html">Documents</a>',
+        '<span class="nav-user" data-auth="user" style="display:none"></span>',
+        '<a class="nav-link" data-key="login" data-auth="login" href="/ui/login.html">Login</a>',
+        '<a class="nav-link" data-key="logout" data-auth="logout" href="/ui/login.html">Logout</a>',
       '</nav>',
     '</div>'
   ].join('');
@@ -44,5 +47,8 @@
   if (key) {
     var el = header.querySelector('.nav-link[data-key="'+key+'"]');
     if (el) el.classList.add('active');
+  }
+  if (window.Auth && typeof window.Auth.wireNavAuth === 'function') {
+    window.Auth.wireNavAuth();
   }
 })();

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>Immcantation Workbench</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="assets/js/auth.js?v=20250320" defer></script>
 
   <style>
     :root{
@@ -51,6 +52,15 @@
       padding:8px var(--pad-x);
       border-radius:10px; border:1px solid transparent;
       transition:background .15s, color .15s, border-color .15s, transform .02s;
+    }
+    .nav-user{
+      color:var(--nav-text);
+      font-size:13px;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(255,255,255,.04);
+      white-space:nowrap;
     }
     .nav-link:hover{color:#fff; background:rgba(255,255,255,.06); border-color:var(--nav-border)}
     .nav-link:active{transform:translateY(1px)}
@@ -120,6 +130,9 @@
         <a class="nav-link" href="/ui/blk.html">Bulk amplicon</a>
         <a class="nav-link" href="/ui/sc.html">Single-Cell AIRR</a>
         <a class="nav-link" href="/ui/docs.html">Documents</a>
+        <span class="nav-user" data-auth="user" style="display:none"></span>
+        <a class="nav-link" data-auth="login" href="/ui/login.html">Login</a>
+        <a class="nav-link" data-auth="logout" href="/ui/login.html">Logout</a>
       </nav>
     </div>
   </header>
@@ -136,6 +149,7 @@
       </div>
       <div class="row">
         <span class="chip">Powerd by: pRESTO / suite:4.6.0</span>
+        <a class="btn secondary" data-auth="login" href="/ui/login.html">Login</a>
       </div>
     </header>
 
@@ -191,6 +205,9 @@
           if (home) home.classList.add('active');
         }
       });
+      if (window.Auth && typeof window.Auth.wireNavAuth === 'function') {
+        window.Auth.wireNavAuth();
+      }
     })();
   </script>
 </body>

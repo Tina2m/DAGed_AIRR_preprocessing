@@ -3,6 +3,7 @@ let SID = null;
 let UNITS_META = [];
 let FLOW = []; // [{unitId,label,params}]
 let running = false;
+let HISTORY_SELECTED = null;
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -12,13 +13,37 @@ const formatUnitLabel = label => {
   const cleaned = raw.replace(/^sc:\s*/i, '').trimStart();
   return cleaned || raw.trim() || raw;
 };
+const apiFetch = (window.Auth && window.Auth.apiFetch) ? window.Auth.apiFetch : fetch;
+
+function formatTimestamp(iso) {
+  if (!iso) {
+    return 'unknown';
+  }
+  try {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return iso;
+    }
+    return date.toLocaleString();
+  } catch (err) {
+    return iso;
+  }
+}
+
+function getUnitLabel(unitId) {
+  const meta = UNITS_META.find(unit => unit.id === unitId);
+  if (meta) {
+    return formatUnitLabel(meta.label || meta.id || unitId);
+  }
+  return unitId;
+}
 
 // ----- Session (auto) -----
 async function ensureSession() {
   if (SID) {
     return SID;
   }
-  const response = await fetch('/session/start', { method: 'POST' });
+  const response = await apiFetch('/session/start', { method: 'POST' });
   const data = await response.json();
   SID = data.session_id;
   window.__SID__ = SID; // keep accessible, not visible
@@ -40,7 +65,7 @@ async function uploadSCFiles() {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('name', file.name);
-    const response = await fetch(`/session/${SID}/upload-aux`, {
+    const response = await apiFetch(`/session/${SID}/upload-aux`, {
       method: 'POST',
       body: formData
     });
@@ -51,6 +76,7 @@ async function uploadSCFiles() {
   $('#upload-msg').textContent = `Uploaded ${successCount}/${files.length} files.`;
   listUploaded(files);
   await refreshState();
+  await loadHistory();
 }
 function listUploaded(fileList) {
   const names = Array.from(fileList).map(file => esc(file.name));
@@ -200,11 +226,11 @@ async function renderUnits() {
   await ensureSession();
   let allUnits = [];
   try {
-    const response = await fetch(`/session/${SID}/units?group=sc`);
+    const response = await apiFetch(`/session/${SID}/units?group=sc`);
     allUnits = await response.json();
   } catch (error) {
     try {
-      const response2 = await fetch(`/session/${SID}/units`);
+      const response2 = await apiFetch(`/session/${SID}/units`);
       allUnits = await response2.json();
     } catch (error2) {
       allUnits = [];
@@ -354,11 +380,12 @@ async function runFlow() {
     const runningMsg = `running step ${index + 1}/${totalSteps}: ${step.label}`;
     $('#pstate').textContent = runningMsg;
     setPipelineProgress((index / totalSteps) * 100, runningMsg);
-    const success = await runUnit(step);
+    const success = await runUnit(step, { skipHistory: true });
     if (!success) {
       const failMsg = `failed at step ${index + 1}: ${step.label}`;
       $('#pstate').textContent = failMsg;
       setPipelineProgress((index / totalSteps) * 100, `Failed at step ${index + 1}/${totalSteps}`);
+      await loadHistory();
       running = false;
       return;
     }
@@ -366,13 +393,14 @@ async function runFlow() {
   }
   $('#pstate').textContent = 'finished ✓';
   setPipelineProgress(100, 'Pipeline complete');
+  await loadHistory();
   running = false;
 }
 
-async function runUnit(step){
+async function runUnit(step, opts = {}){
   await ensureSession();
   try{
-    const r = await fetch(`/session/${SID}/run`, {
+    const r = await apiFetch(`/session/${SID}/run`, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ unit_id: step.unitId, params: step.params })
@@ -386,8 +414,11 @@ async function runUnit(step){
     }
     await refreshState();
     const stepIdx = j.step.step_index;
-    const lr = await fetch(`/session/${SID}/log/${stepIdx}`);
+    const lr = await apiFetch(`/session/${SID}/log/${stepIdx}`);
     $('#log').textContent = await lr.text();
+    if (!opts.skipHistory) {
+      await loadHistory();
+    }
     return true;
   }catch(e){
     alert('Network error running step: '+e);
@@ -395,25 +426,265 @@ async function runUnit(step){
   }
 }
 
+function wireDownloadLinks() {
+  document.querySelectorAll('.art-download').forEach(link => {
+    if (link.dataset.wired) {
+      return;
+    }
+    link.dataset.wired = '1';
+    link.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const name = link.dataset.art;
+      if (!name) {
+        return;
+      }
+      try {
+        const response = await apiFetch(`/session/${SID}/download/${encodeURIComponent(name)}`);
+        if (!response.ok) {
+          throw new Error('Download failed');
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (err) {
+        alert('Download failed. Please try again.');
+      }
+    });
+  });
+}
+
 // ----- State / artifacts -----
 async function refreshState() {
   if (!SID) {
     return;
   }
-  const response = await fetch(`/session/${SID}/state`);
+  const response = await apiFetch(`/session/${SID}/state`);
   const state = await response.json();
   const chips = Object.entries(state.current || {}).map(([key, value]) =>
     `<span class="pill">${esc(key)}: ${esc(value)}</span>`
   ).join(' ');
   $('#statebox').innerHTML = chips || '<span class="muted">no state</span>';
   const artifacts = Object.values(state.artifacts || {}).map(artifact =>
-    `<div>${esc(artifact.name)} — <a href="/session/${SID}/download/${encodeURIComponent(artifact.name)}">download</a></div>`
+    `<div>${esc(artifact.name)} - <a href="#" class="art-download" data-art="${esc(artifact.name)}">download</a></div>`
   ).join('');
   $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
+  wireDownloadLinks();
+}
+
+function collectUploadedItems(state) {
+  const items = [];
+  const artifacts = Object.values(state.artifacts || {});
+  artifacts.filter(art => art.from_step === -1).forEach(art => {
+    items.push({
+      label: art.path || art.name,
+      sub: art.name,
+      download: art.name
+    });
+  });
+  (state.aux_files || []).forEach(name => {
+    items.push({ label: name, sub: 'aux file' });
+  });
+  return items;
+}
+
+function collectOutputItems(state) {
+  const items = [];
+  Object.values(state.artifacts || {}).forEach(art => {
+    if (typeof art.from_step === 'number' && art.from_step >= 0) {
+      const label = art.path || art.name;
+      const sub = (art.path && art.path !== art.name) ? art.name : '';
+      items.push({ label, sub, download: art.name });
+    }
+  });
+  return items;
+}
+
+function renderArtifactItems(items, emptyText, sid) {
+  if (!items.length) {
+    return `<div class="muted">${esc(emptyText)}</div>`;
+  }
+  return items.map(item => {
+    const sub = item.sub ? `<div class="artifact-sub">${esc(item.sub)}</div>` : '';
+    const download = item.download
+      ? `<a href="#" class="history-download" data-sid="${esc(sid)}" data-art="${esc(item.download)}">download</a>`
+      : '';
+    return `<div class="artifact-item"><div><div class="artifact-label">${esc(item.label)}</div>${sub}</div>${download}</div>`;
+  }).join('');
+}
+
+function renderPipelineSteps(steps) {
+  if (!steps.length) {
+    return '<div class="muted">No steps run yet.</div>';
+  }
+  return steps.map((step, index) => {
+    const unitId = step.unit || '';
+    const label = getUnitLabel(unitId);
+    return `
+      <div class="pipeline-step">
+        <div class="pipeline-index">${index + 1}</div>
+        <div class="pipeline-info">
+          <div class="pipeline-label">${esc(label)}</div>
+          <div class="pipeline-unit">${esc(unitId)}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderHistoryDetails(state, sid) {
+  const details = $('#history-details');
+  if (!details) {
+    return;
+  }
+  const header = `
+    <div class="run-stats-meta">
+      <strong>${esc(sid)}</strong>
+      <span>${esc(formatTimestamp(state.updated_at || state.created_at))}</span>
+    </div>`;
+  const uploaded = renderArtifactItems(collectUploadedItems(state), 'No uploaded files recorded.', sid);
+  const outputs = renderArtifactItems(collectOutputItems(state), 'No output files yet.', sid);
+  const pipeline = renderPipelineSteps(state.steps || []);
+  details.innerHTML = `
+    ${header}
+    <div class="history-section">
+      <h3>Uploaded files</h3>
+      <div class="run-artifacts">${uploaded}</div>
+    </div>
+    <div class="history-section">
+      <h3>Pipeline</h3>
+      <div class="run-pipeline">${pipeline}</div>
+    </div>
+    <div class="history-section">
+      <h3>Output files</h3>
+      <div class="run-artifacts">${outputs}</div>
+    </div>
+  `;
+  wireHistoryDownloads();
+}
+
+async function loadHistoryDetails(sid) {
+  const details = $('#history-details');
+  if (!details) {
+    return;
+  }
+  HISTORY_SELECTED = sid;
+  $$('#history-list .run-history-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.sid === sid);
+  });
+  details.innerHTML = '<div class="muted">Loading details...</div>';
+  try {
+    const response = await apiFetch(`/session/${sid}/state`);
+    if (!response.ok) {
+      throw new Error('history fetch failed');
+    }
+    const state = await response.json();
+    renderHistoryDetails(state, sid);
+  } catch (err) {
+    details.innerHTML = '<div class="muted">Unable to load session details.</div>';
+  }
+}
+
+async function loadHistory() {
+  const list = $('#history-list');
+  const details = $('#history-details');
+  if (!list) {
+    return;
+  }
+  list.innerHTML = '<div class="muted">Loading history...</div>';
+  if (details) {
+    details.innerHTML = '<div class="muted">Select a run to view details.</div>';
+  }
+  try {
+    const response = await apiFetch('/sessions');
+    if (!response.ok) {
+      throw new Error('history list failed');
+    }
+    const sessions = await response.json();
+    const sorted = (sessions || []).sort((a, b) => {
+      const ta = Date.parse(a.updated_at || a.created_at || 0) || 0;
+      const tb = Date.parse(b.updated_at || b.created_at || 0) || 0;
+      return tb - ta;
+    });
+    if (!sorted.length) {
+      list.innerHTML = '<div class="muted">No previous runs yet.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    sorted.forEach(session => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'run-history-item';
+      button.dataset.sid = session.session_id;
+      const meta = [];
+      const time = formatTimestamp(session.updated_at || session.created_at);
+      if (time !== 'unknown') {
+        meta.push(time);
+      }
+      if (typeof session.steps === 'number') {
+        meta.push(`${session.steps} step${session.steps === 1 ? '' : 's'}`);
+      }
+      if (typeof session.artifacts === 'number') {
+        meta.push(`${session.artifacts} artifact${session.artifacts === 1 ? '' : 's'}`);
+      }
+      button.innerHTML = `<strong>${esc(session.session_id)}</strong><small>${esc(meta.join(' | '))}</small>`;
+      button.addEventListener('click', () => loadHistoryDetails(session.session_id));
+      list.appendChild(button);
+    });
+    const initial = sorted.some(s => s.session_id === HISTORY_SELECTED)
+      ? HISTORY_SELECTED
+      : sorted[0].session_id;
+    if (initial) {
+      await loadHistoryDetails(initial);
+    }
+  } catch (err) {
+    list.innerHTML = '<div class="muted">Unable to load history.</div>';
+  }
+}
+
+function wireHistoryDownloads() {
+  document.querySelectorAll('.history-download').forEach(link => {
+    if (link.dataset.wired) {
+      return;
+    }
+    link.dataset.wired = '1';
+    link.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const name = link.dataset.art;
+      const sid = link.dataset.sid;
+      if (!name || !sid) {
+        return;
+      }
+      try {
+        const response = await apiFetch(`/session/${sid}/download/${encodeURIComponent(name)}`);
+        if (!response.ok) {
+          throw new Error('Download failed');
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (err) {
+        alert('Download failed. Please try again.');
+      }
+    });
+  });
 }
 
 // ----- Init -----
 document.addEventListener('DOMContentLoaded', async () => {
+  if (window.Auth && !window.Auth.requireAuth()) {
+    return;
+  }
   // wire buttons
   $('#upload-sc').addEventListener('click', uploadSCFiles);
   $('#validate').addEventListener('click', validateFlow);
@@ -422,9 +693,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#unit-search').addEventListener('input', applySearch);
   $('#expAll').addEventListener('click', expandAll);
   $('#colAll').addEventListener('click', collapseAll);
+  $('#history-refresh')?.addEventListener('click', loadHistory);
 
   resetPipelineProgress();
   await ensureSession();
   await renderUnits();
   applySearch(); // initialize
+  await loadHistory();
 });

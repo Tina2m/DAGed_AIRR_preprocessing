@@ -6,8 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <!-- Shared header -->
-  <link rel="stylesheet" href="assets/css/nav.css?v=20250305">
-  <script src="assets/js/nav.js?v=20250305" defer></script>
+  <link rel="stylesheet" href="assets/css/nav.css?v=20250320">
+  <script src="assets/js/auth.js?v=20250320" defer></script>
+  <script src="assets/js/nav.js?v=20250320" defer></script>
 
   <!-- Bulk-specific grouping/search styles -->
   <link rel="stylesheet" href="assets/css/bulk.css?v=20250310">
@@ -31,7 +32,7 @@
     code{background:#f3f4f6;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
     .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1400px;margin:0 auto}
     .left{flex:0 0 33%;max-width:33%;min-width:0}
-.right{flex:0 0 67%;max-width:67%;position:sticky;top:12px;align-self:flex-start;max-height:calc(100vh - 24px);overflow:auto}
+.right{flex:0 0 67%;max-width:67%;position:sticky;top:12px;align-self:flex-start;max-height:calc(100vh - 24px);overflow:auto;display:flex;flex-direction:column;gap:16px}
     .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
     h1{margin:0 0 12px 0;font-size:22px;letter-spacing:.2px}
     h2{margin:14px 0 10px 0;font-size:18px}
@@ -98,7 +99,7 @@
     }
     .arrow{color:var(--muted);opacity:.9}
     .progress{height:10px;background:#eef2ff;border-radius:99px;overflow:hidden;margin-top:8px;border:1px solid var(--border)}
-    .bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
+    .progress-bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
     pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:10px;max-height:260px;overflow:auto}
     @media (max-width:1100px){
       .wrap{flex-direction:column}
@@ -152,15 +153,6 @@
         </div>
         <div id="unit-groups" class="unit-groups"></div>
 
-        <h2>Run pipeline</h2>
-        <p class="muted">Build a linear flow on the right, then run it from here.</p>
-        <div class="row mb8">
-          <button id="pipe-validate" class="secondary">Validate</button>
-          <button id="pipe-run">Run pipeline</button>
-          <button id="pipe-clear" class="secondary">Clear</button>
-          <span id="pipe-msg" class="muted"></span>
-        </div>
-
         <h2>State</h2>
         <div id="state" class="mb8"></div>
 
@@ -174,22 +166,40 @@
 
     <aside class="right">
       <div class="panel">
-        <h2>Pipeline overview</h2>
-        <div class="muted">Configure structure and monitor progress.</div>
+        <h2>Flow</h2>
+        <div class="row mt8">
+          <button id="pipe-validate" class="secondary">Validate</button>
+          <button id="pipe-run">Run pipeline</button>
+          <button id="pipe-clear" class="secondary">Clear</button>
+          <span id="pipe-msg" class="muted"></span>
+        </div>
+        <div class="mt8">
+          <label class="muted">Schema (click order)</label>
+          <div id="flow" class="flow"></div>
+        </div>
 
-        <h3 class="mt8">Flow</h3>
-        <div id="flow" class="flow"></div>
-
-        <h3 class="mt8">Validation</h3>
+        <div class="mt8">
+          <label class="muted">Validation</label>
         <div id="validation" class="muted">—</div>
 
-        <h3 class="mt8">Run status</h3>
+        </div>
+        <div class="mt8">
+          <label class="muted">Run status</label>
         <div id="run-status" class="muted">—</div>
-        <div class="progress"><div id="run-bar" class="bar"></div></div>
+          <div class="progress"><div id="run-bar" class="progress-bar"></div></div>
+        </div>
+      </div>
+      <div class="panel history-panel">
+        <div class="history-head row">
+          <h2>History</h2>
+          <button id="history-refresh" class="secondary">Refresh</button>
+        </div>
+        <div id="history-list" class="run-history"></div>
+        <div id="history-details" class="history-details muted">Select a run to view details.</div>
       </div>
     </aside>
   </div>
 
-  <script defer src="assets/js/script.js?v=20250310"></script>
+  <script defer src="assets/js/script.js?v=20250320"></script>
 </body>
 </html>
