@@ -119,6 +119,197 @@ function getUnitLabel(unitId) {
   return unitId;
 }
 
+const SC_FILTER_RE = /(filter|remove|productive)/i;
+const FUNNEL_TONES = ["tone-1", "tone-2", "tone-3", "tone-4", "tone-5", "tone-6"];
+let FUNNEL_REQUEST_ID = 0;
+
+function isFilteringUnit(unitId) {
+  if (!unitId) {
+    return false;
+  }
+  return SC_FILTER_RE.test(unitId);
+}
+
+function formatCount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return '0';
+  }
+  return numeric.toLocaleString('en-US');
+}
+
+function extractFirstNumber(text) {
+  if (!text) {
+    return null;
+  }
+  const match = String(text).match(/(\d[\d,]*)/);
+  if (!match) {
+    return null;
+  }
+  const raw = match[1].replace(/,/g, '');
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseLogCounts(logText) {
+  const counts = {};
+  if (!logText) {
+    return { pass: null, total: null, counts };
+  }
+  const lines = String(logText).split(/\r?\n/);
+  lines.forEach(line => {
+    const rowsMatch = line.match(/^\s*Wrote\s+.+\s+rows:\s*([\d,]+)/i);
+    if (rowsMatch) {
+      const value = extractFirstNumber(rowsMatch[1]);
+      if (value !== null) {
+        counts.PASS = value;
+      }
+      return;
+    }
+    const match = line.match(/^\s*([A-Z][A-Z0-9_-]*)>\s*(.+)$/);
+    if (!match) {
+      return;
+    }
+    const key = match[1].toUpperCase();
+    const value = extractFirstNumber(match[2]);
+    if (value !== null) {
+      counts[key] = value;
+    }
+  });
+  const pass = counts.PASS ?? counts.PASSED ?? null;
+  const fail = counts.FAIL ?? counts.FAILED ?? null;
+  let total = counts.SEQUENCES ?? counts.INPUT ?? counts.READS ?? counts.TOTAL ?? null;
+  if (total === null && pass !== null && fail !== null) {
+    total = pass + fail;
+  }
+  return { pass, total, counts };
+}
+
+async function fetchStepLog(stepIndex) {
+  if (!Number.isFinite(stepIndex)) {
+    return '';
+  }
+  try {
+    const response = await apiFetch(`/session/${SID}/log/${stepIndex}`);
+    if (!response.ok) {
+      return '';
+    }
+    return await response.text();
+  } catch (err) {
+    return '';
+  }
+}
+
+function renderFilteringFunnel(mount, rows) {
+  mount.innerHTML = '';
+  rows.forEach(row => {
+    const rowEl = document.createElement('div');
+    rowEl.className = `funnel-row${row.isTotal ? ' is-total' : ''}`;
+
+    const label = document.createElement('div');
+    label.className = 'funnel-label';
+    label.textContent = row.label;
+
+    const track = document.createElement('div');
+    track.className = 'funnel-track';
+
+    const bar = document.createElement('div');
+    bar.className = `funnel-bar ${row.tone || ''}`.trim();
+    bar.style.setProperty('--funnel-width', `${row.width}%`);
+    bar.title = `${row.label}: ${formatCount(row.count)} (${row.percentLabel})`;
+
+    const value = document.createElement('span');
+    value.className = 'funnel-value';
+    value.textContent = formatCount(row.count);
+
+    const percent = document.createElement('span');
+    percent.className = 'funnel-percent';
+    percent.textContent = row.percentLabel;
+
+    bar.appendChild(value);
+    bar.appendChild(percent);
+    track.appendChild(bar);
+    rowEl.appendChild(label);
+    rowEl.appendChild(track);
+    mount.appendChild(rowEl);
+  });
+}
+
+function updateFilteringFunnel(state) {
+  const mount = $('#filter-funnel');
+  if (!mount) {
+    return;
+  }
+  const steps = Array.isArray(state?.steps) ? state.steps : [];
+  const filterSteps = steps.filter(step => isFilteringUnit(step?.unit || ''));
+  if (!filterSteps.length) {
+    mount.innerHTML = '<div class="muted">No filtering steps run yet.</div>';
+    return;
+  }
+  const requestId = ++FUNNEL_REQUEST_ID;
+  mount.innerHTML = '<div class="muted">Loading read stats...</div>';
+
+  (async () => {
+    const results = await Promise.all(filterSteps.map(async (step) => {
+      const logText = await fetchStepLog(step.step_index);
+      return { step, counts: parseLogCounts(logText) };
+    }));
+    if (requestId !== FUNNEL_REQUEST_ID) {
+      return;
+    }
+    let baseline = null;
+    for (const result of results) {
+      if (result.counts.total && result.counts.total > 0) {
+        baseline = result.counts.total;
+        break;
+      }
+    }
+    if (!baseline) {
+      const firstPass = results.find(result => result.counts.pass && result.counts.pass > 0);
+      baseline = firstPass ? firstPass.counts.pass : 0;
+    }
+    if (!baseline) {
+      mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
+      return;
+    }
+    const rows = [];
+    rows.push({
+      label: 'Total reads',
+      count: baseline,
+      percentLabel: '100%',
+      width: 100,
+      tone: FUNNEL_TONES[0],
+      isTotal: true
+    });
+    let toneIndex = 1;
+    results.forEach(result => {
+      const pass = result.counts.pass;
+      if (pass === null) {
+        return;
+      }
+      const pct = baseline ? (pass / baseline) * 100 : 0;
+      const rounded = Math.round(pct);
+      const percentLabel = (rounded === 0 && pass > 0) ? '<1%' : `${rounded}%`;
+      const width = Math.max(2, Math.min(100, pct));
+      rows.push({
+        label: getUnitLabel(result.step.unit || ''),
+        count: pass,
+        percentLabel,
+        width,
+        tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length]
+      });
+      toneIndex += 1;
+    });
+    if (rows.length <= 1) {
+      mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
+      return;
+    }
+    renderFilteringFunnel(mount, rows);
+  })().catch(() => {
+    mount.innerHTML = '<div class="muted">Unable to load read stats.</div>';
+  });
+}
+
 // ----- Session (auto) -----
 async function ensureSession() {
   if (SID) {
@@ -554,6 +745,7 @@ function applyStateSnapshot(state) {
   ).join('');
   $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
   wireDownloadLinks();
+  updateFilteringFunnel(state);
 }
 
 async function refreshState() {
