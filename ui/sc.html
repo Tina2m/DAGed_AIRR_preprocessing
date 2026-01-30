@@ -69,7 +69,7 @@
       </div>
     </main>
 
-    <aside class="right">
+    <aside class="center">
       <div class="panel">
         <h2>Flow</h2>
         <div class="row mt8">
@@ -100,13 +100,17 @@
           <div class="muted">Use “Add to pipeline” on any card to build a pipeline. Order is preserved by your clicks. Units here are independent and operate on uploaded TSVs.</div>
         </div>
       </div>
+    </aside>
+
+    <aside class="right">
       <div class="panel history-panel">
         <div class="history-head">
           <h2>History</h2>
           <button id="history-refresh" class="secondary">Refresh</button>
         </div>
-        <div id="history-list" class="run-history"></div>
-        <div id="history-details" class="history-details muted">Select a run to view details.</div>
+        <div class="history-list-window">
+          <div id="history-list" class="run-history"></div>
+        </div>
       </div>
     </aside>
   </div>

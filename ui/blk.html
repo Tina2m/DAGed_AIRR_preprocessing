@@ -30,9 +30,10 @@
     a{color:var(--accent);text-decoration:none}
     a:hover{text-decoration:underline}
     code{background:#f3f4f6;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
-    .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1400px;margin:0 auto}
-    .left{flex:0 0 33%;max-width:33%;min-width:0}
-.right{flex:0 0 67%;max-width:67%;position:sticky;top:12px;align-self:flex-start;max-height:calc(100vh - 24px);overflow:auto;display:flex;flex-direction:column;gap:16px}
+    .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1500px;margin:0 auto}
+    .left{flex:0 0 34%;max-width:34%;min-width:0}
+    .center{flex:0 0 42%;max-width:42%;min-width:0;position:sticky;top:12px;align-self:flex-start;display:flex;flex-direction:column;gap:16px}
+    .right{flex:0 0 24%;max-width:24%;min-width:0;position:sticky;top:12px;align-self:flex-start}
     .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
     h1{margin:0 0 12px 0;font-size:22px;letter-spacing:.2px}
     h2{margin:14px 0 10px 0;font-size:18px}
@@ -103,8 +104,8 @@
     pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:10px;max-height:260px;overflow:auto}
     @media (max-width:1100px){
       .wrap{flex-direction:column}
-      .left,.right{flex:1 1 auto;max-width:100%}
-      .right{position:relative;top:0}
+      .left,.center,.right{flex:1 1 auto;max-width:100%}
+      .center,.right{position:relative;top:0}
     }
   </style>
 </head>
@@ -164,7 +165,7 @@
       </div>
     </main>
 
-    <aside class="right">
+    <aside class="center">
       <div class="panel">
         <h2>Flow</h2>
         <div class="row mt8">
@@ -189,13 +190,17 @@
           <div class="progress"><div id="run-bar" class="progress-bar"></div></div>
         </div>
       </div>
+    </aside>
+
+    <aside class="right">
       <div class="panel history-panel">
         <div class="history-head row">
           <h2>History</h2>
           <button id="history-refresh" class="secondary">Refresh</button>
         </div>
-        <div id="history-list" class="run-history"></div>
-        <div id="history-details" class="history-details muted">Select a run to view details.</div>
+        <div class="history-list-window">
+          <div id="history-list" class="run-history"></div>
+        </div>
       </div>
     </aside>
   </div>

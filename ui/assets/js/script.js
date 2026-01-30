@@ -45,6 +45,87 @@ function formatTimestamp(iso) {
   }
 }
 
+function formatParamValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => formatParamValue(item)).filter(item => item !== '').join(', ');
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch (err) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function collectParamEntries(params) {
+  if (!params || typeof params !== 'object') {
+    return [];
+  }
+  return Object.entries(params).reduce((acc, [key, value]) => {
+    const formatted = formatParamValue(value);
+    if (formatted !== '') {
+      acc.push({ key, value: formatted });
+    }
+    return acc;
+  }, []);
+}
+
+function formatParamTitle(entries) {
+  if (!entries.length) {
+    return 'No parameters.';
+  }
+  return entries.map(entry => `${entry.key}: ${entry.value}`).join(' | ');
+}
+
+function cssEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === 'function') {
+    return window.CSS.escape(value);
+  }
+  return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
+function applyParamValueToField(field, value) {
+  if (!field) {
+    return;
+  }
+  if (field.type === 'checkbox') {
+    field.checked = value === true || value === 'true' || value === 1 || value === '1';
+    return;
+  }
+  if (field.tagName === 'SELECT' && field.multiple) {
+    const values = Array.isArray(value)
+      ? value.map(item => String(item))
+      : String(value ?? '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(item => item.length > 0);
+    Array.from(field.options).forEach(opt => {
+      opt.selected = values.includes(opt.value);
+    });
+    return;
+  }
+  field.value = value === null || value === undefined ? '' : String(value);
+}
+
+function applyParamsToCard(card, params) {
+  if (!card || !params || typeof params !== 'object') {
+    return;
+  }
+  Object.entries(params).forEach(([key, value]) => {
+    const selector = `[name="${cssEscape(key)}"]`;
+    const field = card.querySelector(selector);
+    if (!field) {
+      return;
+    }
+    applyParamValueToField(field, value);
+  });
+}
+
 function getUnitLabel(unitId) {
   const meta = UNITS_META.find(unit => unit.id === unitId);
   return meta ? meta.label : unitId;
@@ -75,6 +156,9 @@ function drawFlow() {
   steps.forEach((step, index) => {
     const node = document.createElement('div');
     node.className = 'node';
+    const entries = collectParamEntries(step.params);
+    node.title = formatParamTitle(entries);
+    node.tabIndex = 0;
     const label = document.createElement('span');
     label.className = 'node-label';
     label.textContent = `${index + 1}. ${step.label}`;
@@ -350,9 +434,7 @@ async function runUnit(card, unitId, forcedParams, opts = {}) {
   return true;
 }
 
-async function refreshState() {
-  const response = await apiFetch(`/session/${SID}/state`);
-  const state = await response.json();
+function applyStateSnapshot(state) {
   const chips = Object.entries(state.current || {}).map(([key, value]) =>
     `<span class="chip">${esc(key)}: ${esc(value)}</span>`
   ).join(' ');
@@ -364,6 +446,12 @@ async function refreshState() {
   window.__SESSION_STATE__ = state;
   updatePrimerSelects(state);
   wireDownloadLinks();
+}
+
+async function refreshState() {
+  const response = await apiFetch(`/session/${SID}/state`);
+  const state = await response.json();
+  applyStateSnapshot(state);
 }
 
 function collectUploadedItems(state) {
@@ -411,18 +499,61 @@ function renderPipelineSteps(steps) {
   if (!steps.length) {
     return '<div class="muted">No steps run yet.</div>';
   }
+  const renderParamTooltip = (entries) => {
+    if (!entries.length) {
+      return '<div class="pipeline-param-empty muted">No parameters.</div>';
+    }
+    return entries.map(entry =>
+      `<div class="pipeline-param"><span class="param-key">${esc(entry.key)}</span><span class="param-val">${esc(entry.value)}</span></div>`
+    ).join('');
+  };
   return steps.map((step, index) => {
     const unitId = step.unit || '';
     const label = getUnitLabel(unitId);
+    const entries = collectParamEntries(step.params);
+    const tooltipHtml = renderParamTooltip(entries);
+    const titleText = entries.length
+      ? entries.map(entry => `${entry.key}: ${entry.value}`).join(' | ')
+      : 'No parameters.';
     return `
-      <div class="pipeline-step">
+      <div class="pipeline-step" tabindex="0" title="${esc(titleText)}">
         <div class="pipeline-index">${index + 1}</div>
         <div class="pipeline-info">
           <div class="pipeline-label">${esc(label)}</div>
           <div class="pipeline-unit">${esc(unitId)}</div>
         </div>
+        <div class="pipeline-param-tooltip">${tooltipHtml}</div>
       </div>`;
   }).join('');
+}
+
+function syncPipelineFromSteps(steps) {
+  PIPELINE = [];
+  PIPELINE_SEQ = 0;
+  (steps || []).forEach(step => {
+    const unitId = step.unit || '';
+    const meta = UNITS_META.find(unit => unit.id === unitId) || {};
+    const label = meta.label || unitId;
+    const card = document.querySelector(`.unit-card[data-unit="${cssEscape(unitId)}"]`);
+    if (card) {
+      applyParamsToCard(card, step.params);
+    }
+    PIPELINE.push({
+      id: ++PIPELINE_SEQ,
+      unit: unitId,
+      label,
+      card,
+      params: step.params || {}
+    });
+  });
+  drawFlow();
+}
+
+function setHistoryActive(sid) {
+  HISTORY_SELECTED = sid;
+  $$('#history-list .run-history-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.sid === sid);
+  });
 }
 
 function renderHistoryDetails(state, sid) {
@@ -457,37 +588,35 @@ function renderHistoryDetails(state, sid) {
 }
 
 async function loadHistoryDetails(sid) {
-  const details = $('#history-details');
-  if (!details) {
+  if (!sid) {
     return;
   }
-  HISTORY_SELECTED = sid;
-  $$('#history-list .run-history-item').forEach(item => {
-    item.classList.toggle('active', item.dataset.sid === sid);
-  });
-  details.innerHTML = '<div class="muted">Loading details...</div>';
+  setHistoryActive(sid);
   try {
     const response = await apiFetch(`/session/${sid}/state`);
     if (!response.ok) {
       throw new Error('history fetch failed');
     }
     const state = await response.json();
-    renderHistoryDetails(state, sid);
+    SID = sid;
+    const sidEl = $('#sid');
+    if (sidEl) {
+      sidEl.textContent = sid;
+    }
+    applyStateSnapshot(state);
+    syncPipelineFromSteps(state.steps || []);
+    pipeMsg('History loaded', 'muted');
   } catch (err) {
-    details.innerHTML = '<div class="muted">Unable to load session details.</div>';
+    pipeMsg('Unable to load history.', 'err');
   }
 }
 
 async function loadHistory() {
   const list = $('#history-list');
-  const details = $('#history-details');
   if (!list) {
     return;
   }
   list.innerHTML = '<div class="muted">Loading history...</div>';
-  if (details) {
-    details.innerHTML = '<div class="muted">Select a run to view details.</div>';
-  }
   try {
     const response = await apiFetch('/sessions');
     if (!response.ok) {
@@ -524,11 +653,8 @@ async function loadHistory() {
       button.addEventListener('click', () => loadHistoryDetails(session.session_id));
       list.appendChild(button);
     });
-    const initial = sorted.some(s => s.session_id === HISTORY_SELECTED)
-      ? HISTORY_SELECTED
-      : sorted[0].session_id;
-    if (initial) {
-      await loadHistoryDetails(initial);
+    if (HISTORY_SELECTED) {
+      setHistoryActive(HISTORY_SELECTED);
     }
   } catch (err) {
     list.innerHTML = '<div class="muted">Unable to load history.</div>';
