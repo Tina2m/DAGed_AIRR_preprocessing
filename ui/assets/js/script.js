@@ -808,13 +808,17 @@ async function loadHistory() {
       throw new Error('history list failed');
     }
     const sessions = await response.json();
-    const sorted = (sessions || []).sort((a, b) => {
+    const filtered = (sessions || []).filter(session => {
+      const group = (session.group || '').toLowerCase();
+      return group !== 'sc';
+    });
+    const sorted = filtered.sort((a, b) => {
       const ta = Date.parse(a.updated_at || a.created_at || 0) || 0;
       const tb = Date.parse(b.updated_at || b.created_at || 0) || 0;
       return tb - ta;
     });
     if (!sorted.length) {
-      list.innerHTML = '<div class="muted">No previous runs yet.</div>';
+      list.innerHTML = '<div class="muted">No previous bulk runs yet.</div>';
       return;
     }
     list.innerHTML = '';

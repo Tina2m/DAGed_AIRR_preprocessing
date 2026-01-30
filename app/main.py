@@ -1670,24 +1670,42 @@ def list_sessions(user: Dict[str, str] = Depends(_require_user)):
     if not sessions_dir.exists():
         return []
     results = []
+    def infer_group(state: SessionState) -> str:
+        if any((step.unit or "").startswith("sc_") for step in state.steps):
+            return "sc"
+        if state.steps:
+            return "bulk"
+        if any(name.lower().endswith((".tsv", ".tsv.gz")) for name in (state.aux_files or [])):
+            return "sc"
+        if any((art.path or "").lower().endswith((".tsv", ".tsv.gz")) for art in state.artifacts.values()):
+            return "sc"
+        if "SC_TABLE" in (state.current or {}):
+            return "sc"
+        if any(ch in (state.current or {}) for ch in ("R1", "R2")):
+            return "bulk"
+        if any(art.kind in ("fastq", "fasta") for art in state.artifacts.values()):
+            return "bulk"
+        return "unknown"
     for entry in sorted(sessions_dir.iterdir(), key=lambda p: p.name):
         if not entry.is_dir():
             continue
         state_file = entry / "state.json"
         if not state_file.exists():
-            results.append({"session_id": entry.name})
+            results.append({"session_id": entry.name, "group": "unknown"})
             continue
         try:
             state = SessionState.model_validate_json(state_file.read_text())
         except Exception:
-            results.append({"session_id": entry.name})
+            results.append({"session_id": entry.name, "group": "unknown"})
             continue
+        group = infer_group(state)
         results.append({
             "session_id": state.session_id,
             "created_at": state.created_at,
             "updated_at": state.updated_at,
             "steps": len(state.steps),
             "artifacts": len(state.artifacts),
+            "group": group,
         })
     return results
 
