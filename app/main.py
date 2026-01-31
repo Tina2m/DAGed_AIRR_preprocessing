@@ -5,6 +5,7 @@ import gzip
 import pathlib
 import shutil
 import subprocess
+import csv
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Literal, Any
 
@@ -86,7 +87,7 @@ class UnitSpec(BaseModel):
 class Artifact(BaseModel):
     name: str
     path: str
-    kind: Literal["fastq","fasta","tab","log","other"] = "other"
+    kind: Literal["fastq","fasta","tab","log","plot","other"] = "other"
     channel: Optional[Literal["R1","R2"]] = None
     from_step: int
 
@@ -224,6 +225,881 @@ def _peek_first_nonempty_char(path: pathlib.Path, gz: bool) -> str:
     except Exception:
         pass
     return ""
+
+MAX_PLOT_READS = 200000
+QC_PLOT_DIRNAME = "plots"
+MAX_SC_ROWS = 500000
+
+def _open_text_maybe_gz(path: pathlib.Path):
+    if path.suffix.lower() == ".gz":
+        return gzip.open(path, "rt", errors="ignore")
+    return open(path, "rt", errors="ignore")
+
+def _iter_fastq_records(path: pathlib.Path, max_reads: Optional[int] = None):
+    count = 0
+    with _open_text_maybe_gz(path) as fh:
+        while True:
+            header = fh.readline()
+            if not header:
+                break
+            seq = fh.readline()
+            plus = fh.readline()
+            qual = fh.readline()
+            if not qual:
+                break
+            yield seq.strip(), qual.strip()
+            count += 1
+            if max_reads and count >= max_reads:
+                break
+
+def _iter_fasta_sequences(path: pathlib.Path, max_reads: Optional[int] = None):
+    seq_parts: List[str] = []
+    count = 0
+    with _open_text_maybe_gz(path) as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if seq_parts:
+                    yield "".join(seq_parts)
+                    seq_parts = []
+                    count += 1
+                    if max_reads and count >= max_reads:
+                        return
+                continue
+            seq_parts.append(line.strip())
+        if seq_parts:
+            yield "".join(seq_parts)
+            count += 1
+            if max_reads and count >= max_reads:
+                return
+
+def _iter_sequences(path: pathlib.Path, max_reads: Optional[int] = None):
+    first = _peek_first_nonempty_char(path, gz=path.suffix.lower() == ".gz")
+    if first == "@":
+        for seq, _qual in _iter_fastq_records(path, max_reads=max_reads):
+            yield seq
+        return
+    for seq in _iter_fasta_sequences(path, max_reads=max_reads):
+        yield seq
+
+def _iter_tsv_rows(path: pathlib.Path, max_rows: Optional[int] = None):
+    count = 0
+    with _open_text_maybe_gz(path) as fh:
+        reader = csv.reader(fh, delimiter="\t")
+        header = next(reader, None)
+        if not header:
+            return
+        idx = {name: i for i, name in enumerate(header)}
+        for row in reader:
+            yield row, idx
+            count += 1
+            if max_rows and count >= max_rows:
+                break
+
+def _truthy(val: str) -> bool:
+    if val is None:
+        return False
+    return str(val).strip().lower() in {"true", "t", "1", "yes", "y"}
+
+def _get_cell_value(row: List[str], idx: Optional[int]) -> str:
+    if idx is None:
+        return ""
+    if idx >= len(row):
+        return ""
+    return row[idx].strip()
+
+def _quality_hist(path: pathlib.Path, max_reads: int = MAX_PLOT_READS) -> tuple[List[int], int]:
+    counts = [0] * 41
+    total = 0
+    for _seq, qual in _iter_fastq_records(path, max_reads=max_reads):
+        if not qual:
+            continue
+        total += 1
+        qsum = sum((ord(ch) - 33) for ch in qual)
+        mean_q = qsum / max(1, len(qual))
+        idx = int(round(mean_q))
+        if idx < 0:
+            idx = 0
+        if idx > 40:
+            idx = 40
+        counts[idx] += 1
+    return counts, total
+
+def _choose_length_bin_width(min_len: int, max_len: int) -> int:
+    span = max_len - min_len
+    if span <= 50:
+        return 1
+    if span <= 200:
+        return 5
+    if span <= 500:
+        return 10
+    return 25
+
+def _length_hist(path: pathlib.Path, max_reads: int = MAX_PLOT_READS) -> tuple[List[int], List[int], int]:
+    lengths: List[int] = []
+    for seq in _iter_sequences(path, max_reads=max_reads):
+        if seq:
+            lengths.append(len(seq))
+    if not lengths:
+        return [], [], 0
+    min_len = min(lengths)
+    max_len = max(lengths)
+    bin_width = _choose_length_bin_width(min_len, max_len)
+    start = (min_len // bin_width) * bin_width
+    end = ((max_len + bin_width - 1) // bin_width) * bin_width
+    bins = list(range(start, end + bin_width, bin_width))
+    counts = [0] * (len(bins) - 1)
+    for length in lengths:
+        idx = min((length - start) // bin_width, len(counts) - 1)
+        counts[idx] += 1
+    return bins, counts, len(lengths)
+
+def _write_hist_svg(dest: pathlib.Path, title: str, x_label: str, bins: List[int], counts: List[int], total: int):
+    width = 640
+    height = 360
+    margin = 48
+    plot_w = width - margin * 2
+    plot_h = height - margin * 2
+    max_count = max(counts) if counts else 1
+    bar_count = len(counts) if counts else 1
+    bar_w = plot_w / bar_count
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
+        f'<text x="{width/2:.1f}" y="24" text-anchor="middle" font-size="14" fill="#111827">{title}</text>',
+        f'<text x="{width/2:.1f}" y="{height-8}" text-anchor="middle" font-size="12" fill="#6b7280">{x_label}</text>',
+        f'<text x="10" y="{margin-8}" font-size="11" fill="#6b7280">n={total}</text>',
+        f'<line x1="{margin}" y1="{height-margin}" x2="{width-margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+    ]
+    if counts:
+        for i, count in enumerate(counts):
+            bar_h = (count / max_count) * plot_h if max_count else 0
+            x = margin + i * bar_w
+            y = margin + (plot_h - bar_h)
+            lines.append(
+                f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_w-1:.2f}" height="{bar_h:.2f}" fill="#60a5fa"/>'
+            )
+    if bins:
+        lines.append(f'<text x="{margin}" y="{height-margin+16}" font-size="11" fill="#6b7280">{bins[0]}</text>')
+        lines.append(f'<text x="{width-margin}" y="{height-margin+16}" text-anchor="end" font-size="11" fill="#6b7280">{bins[-1]}</text>')
+    lines.append('</svg>')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(lines))
+
+def _write_hist_svg_dual(
+    dest: pathlib.Path,
+    title: str,
+    x_label: str,
+    bins: List[int],
+    counts_a: List[int],
+    counts_b: List[int],
+    total_a: int,
+    total_b: int,
+    label_a: str,
+    label_b: str,
+):
+    width = 640
+    height = 360
+    margin = 48
+    plot_w = width - margin * 2
+    plot_h = height - margin * 2
+    max_count = max([1] + counts_a + counts_b)
+    bar_count = len(counts_a) if counts_a else 1
+    bar_w = plot_w / bar_count
+    half_w = max(1, (bar_w - 2) / 2)
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
+        f'<text x="{width/2:.1f}" y="24" text-anchor="middle" font-size="14" fill="#111827">{title}</text>',
+        f'<text x="{width/2:.1f}" y="{height-8}" text-anchor="middle" font-size="12" fill="#6b7280">{x_label}</text>',
+        f'<text x="10" y="{margin-8}" font-size="11" fill="#6b7280">n={total_a} / {total_b}</text>',
+        f'<line x1="{margin}" y1="{height-margin}" x2="{width-margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+        # legend
+        f'<rect x="{width-margin-120}" y="{margin-20}" width="10" height="10" fill="#60a5fa"/>',
+        f'<text x="{width-margin-104}" y="{margin-11}" font-size="11" fill="#6b7280">{label_a}</text>',
+        f'<rect x="{width-margin-60}" y="{margin-20}" width="10" height="10" fill="#fb7185"/>',
+        f'<text x="{width-margin-44}" y="{margin-11}" font-size="11" fill="#6b7280">{label_b}</text>',
+    ]
+    if counts_a and counts_b:
+        for i, (count_a, count_b) in enumerate(zip(counts_a, counts_b)):
+            x = margin + i * bar_w
+            bar_h_a = (count_a / max_count) * plot_h if max_count else 0
+            bar_h_b = (count_b / max_count) * plot_h if max_count else 0
+            y_a = margin + (plot_h - bar_h_a)
+            y_b = margin + (plot_h - bar_h_b)
+            lines.append(
+                f'<rect x="{x:.2f}" y="{y_a:.2f}" width="{half_w:.2f}" height="{bar_h_a:.2f}" fill="#60a5fa"/>'
+            )
+            lines.append(
+                f'<rect x="{x + half_w + 2:.2f}" y="{y_b:.2f}" width="{half_w:.2f}" height="{bar_h_b:.2f}" fill="#fb7185"/>'
+            )
+    if bins:
+        lines.append(f'<text x="{margin}" y="{height-margin+16}" font-size="11" fill="#6b7280">{bins[0]}</text>')
+        lines.append(f'<text x="{width-margin}" y="{height-margin+16}" text-anchor="end" font-size="11" fill="#6b7280">{bins[-1]}</text>')
+    lines.append('</svg>')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(lines))
+
+def _write_stacked_bar_svg(
+    dest: pathlib.Path,
+    title: str,
+    categories: List[str],
+    segment_values: List[List[int]],
+    segment_labels: List[str],
+    colors: List[str],
+    y_label: str,
+    segment_counts: Optional[List[List[int]]] = None,
+):
+    width = 680
+    height = 380
+    margin = 60
+    plot_w = width - margin * 2
+    plot_h = height - margin * 2
+    max_total = max([1] + [sum(vals) for vals in segment_values])
+    bar_count = max(1, len(categories))
+    bar_w = plot_w / bar_count
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
+        f'<text x="{width/2:.1f}" y="24" text-anchor="middle" font-size="14" fill="#111827">{title}</text>',
+        f'<text x="14" y="{margin-18}" font-size="11" fill="#6b7280">{y_label}</text>',
+        f'<line x1="{margin}" y1="{height-margin}" x2="{width-margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+    ]
+    # legend
+    legend_x = width - margin - 10
+    legend_y = margin - 24
+    for i, label in enumerate(segment_labels):
+        color = colors[i % len(colors)]
+        lx = legend_x - (len(segment_labels) - i) * 110
+        lines.append(f'<rect x="{lx}" y="{legend_y}" width="10" height="10" fill="{color}"/>')
+        lines.append(f'<text x="{lx+14}" y="{legend_y+9}" font-size="11" fill="#6b7280">{label}</text>')
+
+    for i, category in enumerate(categories):
+        x = margin + i * bar_w
+        base_y = height - margin
+        total = max_total if max_total else 1
+        vals = segment_values[i] if i < len(segment_values) else [0] * len(segment_labels)
+        counts = segment_counts[i] if (segment_counts and i < len(segment_counts)) else None
+        for j, value in enumerate(vals):
+            bar_h = (value / total) * plot_h if total else 0
+            y = base_y - bar_h
+            color = colors[j % len(colors)]
+            lines.append(
+                f'<rect x="{x+6:.2f}" y="{y:.2f}" width="{bar_w-12:.2f}" height="{bar_h:.2f}" fill="{color}"/>'
+            )
+            if counts is not None and j < len(counts):
+                label_val = counts[j]
+                if label_val:
+                    text_y = y + bar_h / 2
+                    if bar_h < 14:
+                        text_y = y - 4
+                    lines.append(
+                        f'<text x="{x + bar_w/2:.1f}" y="{text_y:.1f}" text-anchor="middle" font-size="11" fill="#111827">{label_val}</text>'
+                    )
+            base_y = y
+        label = category if len(category) <= 10 else (category[:9] + "…")
+        lines.append(
+            f'<text x="{x + bar_w/2:.1f}" y="{height-margin+18}" text-anchor="middle" font-size="11" fill="#6b7280">{label}</text>'
+        )
+    lines.append('</svg>')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(lines))
+
+def _write_grouped_bar_svg(
+    dest: pathlib.Path,
+    title: str,
+    categories: List[str],
+    values_a: List[float],
+    values_b: List[float],
+    label_a: str,
+    label_b: str,
+    y_label: str,
+    max_value: Optional[float] = None,
+):
+    width = 720
+    height = 380
+    margin = 60
+    plot_w = width - margin * 2
+    plot_h = height - margin * 2
+    max_val = max_value if max_value is not None else max([1.0] + values_a + values_b)
+    group_count = max(1, len(categories))
+    group_w = plot_w / group_count
+    bar_w = max(6, (group_w - 12) / 2)
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
+        f'<text x="{width/2:.1f}" y="24" text-anchor="middle" font-size="14" fill="#111827">{title}</text>',
+        f'<text x="14" y="{margin-18}" font-size="11" fill="#6b7280">{y_label}</text>',
+        f'<line x1="{margin}" y1="{height-margin}" x2="{width-margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+        f'<line x1="{margin}" y1="{margin}" x2="{margin}" y2="{height-margin}" stroke="#d1d5db"/>',
+        f'<rect x="{width-margin-120}" y="{margin-20}" width="10" height="10" fill="#60a5fa"/>',
+        f'<text x="{width-margin-104}" y="{margin-11}" font-size="11" fill="#6b7280">{label_a}</text>',
+        f'<rect x="{width-margin-60}" y="{margin-20}" width="10" height="10" fill="#fb7185"/>',
+        f'<text x="{width-margin-44}" y="{margin-11}" font-size="11" fill="#6b7280">{label_b}</text>',
+    ]
+    for i, category in enumerate(categories):
+        x = margin + i * group_w
+        val_a = values_a[i] if i < len(values_a) else 0
+        val_b = values_b[i] if i < len(values_b) else 0
+        h_a = (val_a / max_val) * plot_h if max_val else 0
+        h_b = (val_b / max_val) * plot_h if max_val else 0
+        lines.append(
+            f'<rect x="{x+6:.2f}" y="{height-margin-h_a:.2f}" width="{bar_w:.2f}" height="{h_a:.2f}" fill="#60a5fa"/>'
+        )
+        lines.append(
+            f'<rect x="{x+6+bar_w+4:.2f}" y="{height-margin-h_b:.2f}" width="{bar_w:.2f}" height="{h_b:.2f}" fill="#fb7185"/>'
+        )
+        label = category if len(category) <= 10 else (category[:9] + "…")
+        lines.append(
+            f'<text x="{x + group_w/2:.1f}" y="{height-margin+18}" text-anchor="middle" font-size="11" fill="#6b7280">{label}</text>'
+        )
+    lines.append('</svg>')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(lines))
+
+def _plot_artifact_name(step_idx: int, unit_id: str, channel: str, stage: str) -> str:
+    return f"plot_{step_idx:03d}_{unit_id}_{channel}_{stage}"
+
+def _hist_uniform(values: List[float], bins: List[int]) -> List[int]:
+    if not bins or len(bins) < 2:
+        return []
+    step = bins[1] - bins[0]
+    if step <= 0:
+        return []
+    start = bins[0]
+    counts = [0] * (len(bins) - 1)
+    for value in values:
+        idx = int((value - start) // step)
+        if idx < 0:
+            idx = 0
+        if idx >= len(counts):
+            idx = len(counts) - 1
+        counts[idx] += 1
+    return counts
+
+def _percent_bins(step: int = 5) -> List[int]:
+    return list(range(0, 101, step))
+
+def _n_percent(seq: str) -> float:
+    if not seq:
+        return 0.0
+    n_count = sum(1 for ch in seq if ch in ("N", "n"))
+    return (n_count / len(seq)) * 100.0
+
+def _max_homopolymer(seq: str) -> int:
+    if not seq:
+        return 0
+    max_run = 1
+    run = 1
+    prev = seq[0].upper()
+    for ch in seq[1:]:
+        up = ch.upper()
+        if up == prev:
+            run += 1
+        else:
+            if run > max_run:
+                max_run = run
+            run = 1
+            prev = up
+    if run > max_run:
+        max_run = run
+    return max_run
+
+def _percent_hist_from_sequences(
+    path: pathlib.Path,
+    bins: List[int],
+    metric_fn,
+    max_reads: int = MAX_PLOT_READS,
+) -> tuple[List[int], int]:
+    counts = [0] * (len(bins) - 1)
+    total = 0
+    step = bins[1] - bins[0] if len(bins) > 1 else 1
+    start = bins[0] if bins else 0
+    for seq in _iter_sequences(path, max_reads=max_reads):
+        if not seq:
+            continue
+        value = metric_fn(seq)
+        idx = int((value - start) // step)
+        if idx < 0:
+            idx = 0
+        if idx >= len(counts):
+            idx = len(counts) - 1
+        counts[idx] += 1
+        total += 1
+    return counts, total
+
+def _length_hist_dual(
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    max_reads: int = MAX_PLOT_READS,
+) -> tuple[List[int], List[int], List[int], int, int]:
+    lengths_before = [len(seq) for seq in _iter_sequences(before_path, max_reads=max_reads)]
+    lengths_after = [len(seq) for seq in _iter_sequences(after_path, max_reads=max_reads)]
+    if not lengths_before and not lengths_after:
+        return [], [], [], 0, 0
+    all_lengths = lengths_before + lengths_after
+    min_len = min(all_lengths)
+    max_len = max(all_lengths)
+    bin_width = _choose_length_bin_width(min_len, max_len)
+    start = (min_len // bin_width) * bin_width
+    end = ((max_len + bin_width - 1) // bin_width) * bin_width
+    bins = list(range(start, end + bin_width, bin_width))
+    counts_before = [0] * (len(bins) - 1)
+    counts_after = [0] * (len(bins) - 1)
+    for length in lengths_before:
+        idx = min((length - start) // bin_width, len(counts_before) - 1)
+        counts_before[idx] += 1
+    for length in lengths_after:
+        idx = min((length - start) // bin_width, len(counts_after) - 1)
+        counts_after[idx] += 1
+    return bins, counts_before, counts_after, len(lengths_before), len(lengths_after)
+
+def _repeat_hist_dual(
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    max_reads: int = MAX_PLOT_READS,
+) -> tuple[List[int], List[int], List[int], int, int]:
+    vals_before = [_max_homopolymer(seq) for seq in _iter_sequences(before_path, max_reads=max_reads)]
+    vals_after = [_max_homopolymer(seq) for seq in _iter_sequences(after_path, max_reads=max_reads)]
+    if not vals_before and not vals_after:
+        return [], [], [], 0, 0
+    all_vals = vals_before + vals_after
+    min_val = min(all_vals)
+    max_val = max(all_vals)
+    bin_width = _choose_length_bin_width(min_val, max_val)
+    start = (min_val // bin_width) * bin_width
+    end = ((max_val + bin_width - 1) // bin_width) * bin_width
+    bins = list(range(start, end + bin_width, bin_width))
+    counts_before = [0] * (len(bins) - 1)
+    counts_after = [0] * (len(bins) - 1)
+    for value in vals_before:
+        idx = min((value - start) // bin_width, len(counts_before) - 1)
+        counts_before[idx] += 1
+    for value in vals_after:
+        idx = min((value - start) // bin_width, len(counts_after) - 1)
+        counts_after[idx] += 1
+    return bins, counts_before, counts_after, len(vals_before), len(vals_after)
+
+def _percent_hist_dual(
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    metric_fn,
+    max_reads: int = MAX_PLOT_READS,
+) -> tuple[List[int], List[int], List[int], int, int]:
+    bins = _percent_bins(5)
+    counts_before, total_before = _percent_hist_from_sequences(before_path, bins, metric_fn, max_reads=max_reads)
+    counts_after, total_after = _percent_hist_from_sequences(after_path, bins, metric_fn, max_reads=max_reads)
+    return bins, counts_before, counts_after, total_before, total_after
+
+def _generate_quality_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    channel: str,
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    artifacts: List[Artifact] = []
+    try:
+        first_before = _peek_first_nonempty_char(before_path, gz=before_path.suffix.lower() == ".gz")
+        first_after = _peek_first_nonempty_char(after_path, gz=after_path.suffix.lower() == ".gz")
+        if first_before != "@" or first_after != "@":
+            return artifacts
+        counts_before, total_before = _quality_hist(before_path)
+        counts_after, total_after = _quality_hist(after_path)
+        if total_before == 0 and total_after == 0:
+            return artifacts
+        name = _plot_artifact_name(step_idx, unit_id, channel, "compare")
+        rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
+        _write_hist_svg_dual(
+            sdir / rel,
+            f"Quality scores ({channel})",
+            "Mean quality (Phred)",
+            list(range(41)),
+            counts_before,
+            counts_after,
+            total_before,
+            total_after,
+            "before",
+            "after",
+        )
+        artifacts.append(Artifact(name=name, path=str(rel), kind="plot", channel=channel, from_step=step_idx))
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"[PLOT] quality plot failed for {channel} compare: {exc}\n")
+        except Exception:
+            pass
+    return artifacts
+
+def _generate_missing_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    channel: str,
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    artifacts: List[Artifact] = []
+    try:
+        bins, counts_before, counts_after, total_before, total_after = _percent_hist_dual(
+            before_path, after_path, _n_percent
+        )
+        if total_before == 0 and total_after == 0:
+            return artifacts
+        name = _plot_artifact_name(step_idx, unit_id, channel, "compare")
+        rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
+        _write_hist_svg_dual(
+            sdir / rel,
+            f"Missing bases ({channel})",
+            "Percent N per read",
+            bins,
+            counts_before,
+            counts_after,
+            total_before,
+            total_after,
+            "before",
+            "after",
+        )
+        artifacts.append(Artifact(name=name, path=str(rel), kind="plot", channel=channel, from_step=step_idx))
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"[PLOT] missing plot failed for {channel} compare: {exc}\n")
+        except Exception:
+            pass
+    return artifacts
+
+def _generate_repeats_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    channel: str,
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    artifacts: List[Artifact] = []
+    try:
+        bins, counts_before, counts_after, total_before, total_after = _repeat_hist_dual(before_path, after_path)
+        if total_before == 0 and total_after == 0:
+            return artifacts
+        name = _plot_artifact_name(step_idx, unit_id, channel, "compare")
+        rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
+        _write_hist_svg_dual(
+            sdir / rel,
+            f"Max homopolymer ({channel})",
+            "Max run length",
+            bins,
+            counts_before,
+            counts_after,
+            total_before,
+            total_after,
+            "before",
+            "after",
+        )
+        artifacts.append(Artifact(name=name, path=str(rel), kind="plot", channel=channel, from_step=step_idx))
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"[PLOT] repeats plot failed for {channel} compare: {exc}\n")
+        except Exception:
+            pass
+    return artifacts
+
+def _generate_maskqual_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    channel: str,
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    artifacts: List[Artifact] = []
+    try:
+        bins, counts_before, counts_after, total_before, total_after = _percent_hist_dual(
+            before_path, after_path, _n_percent
+        )
+        if total_before == 0 and total_after == 0:
+            return artifacts
+        name = _plot_artifact_name(step_idx, unit_id, channel, "compare")
+        rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
+        _write_hist_svg_dual(
+            sdir / rel,
+            f"Masked bases ({channel})",
+            "Percent N per read",
+            bins,
+            counts_before,
+            counts_after,
+            total_before,
+            total_after,
+            "before",
+            "after",
+        )
+        artifacts.append(Artifact(name=name, path=str(rel), kind="plot", channel=channel, from_step=step_idx))
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"[PLOT] maskqual plot failed for {channel} compare: {exc}\n")
+        except Exception:
+            pass
+    return artifacts
+
+def _sc_productive_counts(path: pathlib.Path, productive_field: str, fallback: bool) -> Dict[str, int]:
+    counts = {"productive": 0, "nonproductive": 0, "unknown": 0}
+    for row, idx in _iter_tsv_rows(path):
+        if productive_field in idx:
+            val = _get_cell_value(row, idx.get(productive_field))
+            if _truthy(val):
+                counts["productive"] += 1
+            else:
+                counts["nonproductive"] += 1
+            continue
+        if fallback and ("vj_in_frame" in idx) and ("stop_codon" in idx):
+            vj_val = _get_cell_value(row, idx.get("vj_in_frame"))
+            stop_val = _get_cell_value(row, idx.get("stop_codon"))
+            if _truthy(vj_val) and not _truthy(stop_val):
+                counts["productive"] += 1
+            else:
+                counts["nonproductive"] += 1
+            continue
+        counts["unknown"] += 1
+    return counts
+
+def _sc_heavy_count_by_cell(
+    path: pathlib.Path,
+    locus_field: str,
+    heavy_values: List[str],
+    cell_field: str,
+    fallback: bool,
+) -> Optional[Dict[str, int]]:
+    counts: Dict[str, int] = {}
+    saw_any = False
+    for row, idx in _iter_tsv_rows(path):
+        if not saw_any:
+            saw_any = True
+            if (locus_field not in idx) and not (fallback and ("v_call" in idx)):
+                return None
+        cell = _get_cell_value(row, idx.get(cell_field))
+        if not cell:
+            continue
+        if cell not in counts:
+            counts[cell] = 0
+        is_heavy = False
+        if locus_field in idx:
+            locus_val = _get_cell_value(row, idx.get(locus_field))
+            is_heavy = locus_val in heavy_values
+        elif fallback and ("v_call" in idx):
+            vcall = _get_cell_value(row, idx.get("v_call"))
+            for hv in heavy_values:
+                if vcall.startswith(hv):
+                    is_heavy = True
+                    break
+        if is_heavy:
+            counts[cell] += 1
+    if not counts:
+        return None
+    return counts
+
+def _sc_heavy_sets_by_sample(
+    path: pathlib.Path,
+    sample_field: Optional[str],
+    locus_field: str,
+    heavy_value: str,
+    cell_field: str,
+    fallback: bool,
+) -> Optional[Dict[str, Dict[str, set]]]:
+    all_cells: Dict[str, set] = {}
+    heavy_cells: Dict[str, set] = {}
+    saw_any = False
+    for row, idx in _iter_tsv_rows(path):
+        if not saw_any:
+            saw_any = True
+            if (locus_field not in idx) and not (fallback and ("v_call" in idx)):
+                return None
+        cell = _get_cell_value(row, idx.get(cell_field))
+        if not cell:
+            continue
+        sample = "all"
+        if sample_field and sample_field in idx:
+            sample_val = _get_cell_value(row, idx.get(sample_field))
+            if sample_val:
+                sample = sample_val
+        if sample not in all_cells:
+            all_cells[sample] = set()
+            heavy_cells[sample] = set()
+        all_cells[sample].add(cell)
+
+        is_heavy = False
+        if locus_field in idx:
+            locus_val = _get_cell_value(row, idx.get(locus_field))
+            is_heavy = (locus_val == heavy_value)
+        elif fallback and ("v_call" in idx):
+            vcall = _get_cell_value(row, idx.get("v_call"))
+            is_heavy = vcall.startswith(heavy_value)
+        else:
+            return None
+
+        if is_heavy:
+            heavy_cells[sample].add(cell)
+
+    if not all_cells:
+        return None
+    out: Dict[str, Dict[str, set]] = {}
+    for sample, cells in all_cells.items():
+        out[sample] = {
+            "all": cells,
+            "heavy": heavy_cells.get(sample, set()),
+        }
+    return out
+
+def _generate_sc_productive_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    before_paths: List[pathlib.Path],
+    productive_field: str,
+    fallback: bool,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    artifacts: List[Artifact] = []
+    try:
+        counts = {"productive": 0, "nonproductive": 0, "unknown": 0}
+        for p in before_paths:
+            c = _sc_productive_counts(p, productive_field, fallback)
+            for k in counts:
+                counts[k] += c.get(k, 0)
+        total = sum(counts.values())
+        if total == 0:
+            return artifacts
+        name = f"plot_{step_idx:03d}_{unit_id}_ratio"
+        rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
+        _write_stacked_bar_svg(
+            sdir / rel,
+            f"Productive vs non-productive (n={total})",
+            ["all"],
+            [
+                [counts["productive"], counts["nonproductive"], counts["unknown"]],
+            ],
+            ["productive", "non-productive", "unknown"],
+            ["#22c55e", "#f59e0b", "#94a3b8"],
+            "Rows",
+            segment_counts=[[counts["productive"], counts["nonproductive"], counts["unknown"]]],
+        )
+        artifacts.append(Artifact(name=name, path=str(rel), kind="plot", from_step=step_idx))
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"[PLOT] sc productive plot failed: {exc}\n")
+        except Exception:
+            pass
+    return artifacts
+
+def _generate_sc_multi_heavy_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    before_paths: List[pathlib.Path],
+    locus_field: str,
+    heavy_values: List[str],
+    cell_field: str,
+    fallback: bool,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    artifacts: List[Artifact] = []
+    try:
+        total = 0
+        c0 = 0
+        c1 = 0
+        c2 = 0
+        for p in before_paths:
+            counts = _sc_heavy_count_by_cell(p, locus_field, heavy_values, cell_field, fallback)
+            if counts is None:
+                continue
+            total += len(counts)
+            c0 += sum(1 for v in counts.values() if v == 0)
+            c1 += sum(1 for v in counts.values() if v == 1)
+            c2 += sum(1 for v in counts.values() if v > 1)
+        if total == 0:
+            return artifacts
+        name = f"plot_{step_idx:03d}_{unit_id}_ratio"
+        rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
+        _write_stacked_bar_svg(
+            sdir / rel,
+            f"Heavy chains per cell (n={total})",
+            ["all"],
+            [
+                [c0, c1, c2],
+            ],
+            ["0 heavy", "1 heavy", "2+ heavy"],
+            ["#93c5fd", "#fbbf24", "#fb7185"],
+            "Cells",
+            segment_counts=[[c0, c1, c2]],
+        )
+        artifacts.append(Artifact(name=name, path=str(rel), kind="plot", from_step=step_idx))
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"[PLOT] sc multi heavy plot failed: {exc}\n")
+        except Exception:
+            pass
+    return artifacts
+
+def _generate_sc_no_heavy_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    before_paths: List[pathlib.Path],
+    sample_field: Optional[str],
+    locus_field: str,
+    heavy_value: str,
+    cell_field: str,
+    fallback: bool,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    return []
+
+def _generate_length_plots(
+    sdir: pathlib.Path,
+    step_idx: int,
+    unit_id: str,
+    channel: str,
+    before_path: pathlib.Path,
+    after_path: pathlib.Path,
+    log_path: pathlib.Path,
+) -> List[Artifact]:
+    artifacts: List[Artifact] = []
+    try:
+        bins, counts_before, counts_after, total_before, total_after = _length_hist_dual(before_path, after_path)
+        if total_before == 0 and total_after == 0:
+            return artifacts
+        name = _plot_artifact_name(step_idx, unit_id, channel, "compare")
+        rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
+        _write_hist_svg_dual(
+            sdir / rel,
+            f"Read length ({channel})",
+            "Read length",
+            bins,
+            counts_before,
+            counts_after,
+            total_before,
+            total_after,
+            "before",
+            "after",
+        )
+        artifacts.append(Artifact(name=name, path=str(rel), kind="plot", channel=channel, from_step=step_idx))
+    except Exception as exc:
+        try:
+            with open(log_path, "a", encoding="utf-8") as log:
+                log.write(f"[PLOT] length plot failed for {channel} compare: {exc}\n")
+        except Exception:
+            pass
+    return artifacts
 
 def make_canonical_name(channel: str, kind: str) -> str:
     return f"{channel}.fastq" if kind == "fastq" else f"{channel}.fasta"
@@ -420,11 +1296,29 @@ class U_FilterQuality(UnitSpec):
         run_cmd(["FilterSeq.py","quality","-s",str(r1),"-q",q,"--outname",f"R1_q{q}","--log",log.name], sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_q{q}")
         produced = [Artifact(name="R1_quality", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        produced += _generate_quality_plots(
+            sdir,
+            idx,
+            self.id,
+            "R1",
+            r1,
+            sdir / out_r1,
+            log,
+        )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             run_cmd(["FilterSeq.py","quality","-s",str(r2),"-q",q,"--outname",f"R2_q{q}","--log",log.name], sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_q{q}")
             produced.append(Artifact(name="R2_quality", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            produced += _generate_quality_plots(
+                sdir,
+                idx,
+                self.id,
+                "R2",
+                r2,
+                sdir / out_r2,
+                log,
+            )
             sess.current["R2"] = "R2_quality"
         sess.current["R1"] = "R1_quality"
         for a in produced: sess.artifacts[a.name] = a
@@ -440,6 +1334,15 @@ class U_FilterLength(UnitSpec):
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_len{n}")
         produced = [Artifact(name="R1_length", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        produced += _generate_length_plots(
+            sdir,
+            idx,
+            self.id,
+            "R1",
+            r1,
+            sdir / out_r1,
+            log,
+        )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             cmd2 = ["FilterSeq.py","length","-s",str(r2),"-n",n,"--outname",f"R2_len{n}","--log",log.name]
@@ -447,6 +1350,15 @@ class U_FilterLength(UnitSpec):
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_len{n}")
             produced.append(Artifact(name="R2_length", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            produced += _generate_length_plots(
+                sdir,
+                idx,
+                self.id,
+                "R2",
+                r2,
+                sdir / out_r2,
+                log,
+            )
             sess.current["R2"] = "R2_length"
         sess.current["R1"] = "R1_length"
         for a in produced: sess.artifacts[a.name] = a
@@ -462,6 +1374,15 @@ class U_FilterMissing(UnitSpec):
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_m{n}")
         produced = [Artifact(name="R1_missing", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        produced += _generate_missing_plots(
+            sdir,
+            idx,
+            self.id,
+            "R1",
+            r1,
+            sdir / out_r1,
+            log,
+        )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             cmd2 = ["FilterSeq.py","missing","-s",str(r2),"-n",n,"--outname",f"R2_m{n}","--log",log.name]
@@ -469,6 +1390,15 @@ class U_FilterMissing(UnitSpec):
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_m{n}")
             produced.append(Artifact(name="R2_missing", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            produced += _generate_missing_plots(
+                sdir,
+                idx,
+                self.id,
+                "R2",
+                r2,
+                sdir / out_r2,
+                log,
+            )
             sess.current["R2"] = "R2_missing"
         sess.current["R1"] = "R1_missing"
         for a in produced: sess.artifacts[a.name] = a
@@ -485,6 +1415,15 @@ class U_FilterRepeats(UnitSpec):
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_rep{n}")
         produced = [Artifact(name="R1_repeats", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        produced += _generate_repeats_plots(
+            sdir,
+            idx,
+            self.id,
+            "R1",
+            r1,
+            sdir / out_r1,
+            log,
+        )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             cmd2 = ["FilterSeq.py","repeats","-s",str(r2),"-n",n,"--outname",f"R2_rep{n}","--log",log.name]
@@ -493,6 +1432,15 @@ class U_FilterRepeats(UnitSpec):
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_rep{n}")
             produced.append(Artifact(name="R2_repeats", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            produced += _generate_repeats_plots(
+                sdir,
+                idx,
+                self.id,
+                "R2",
+                r2,
+                sdir / out_r2,
+                log,
+            )
             sess.current["R2"] = "R2_repeats"
         sess.current["R1"] = "R1_repeats"
         for a in produced: sess.artifacts[a.name] = a
@@ -509,6 +1457,15 @@ class U_FilterTrimQual(UnitSpec):
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_tq{q}")
         produced = [Artifact(name="R1_trimqual", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        produced += _generate_quality_plots(
+            sdir,
+            idx,
+            self.id,
+            "R1",
+            r1,
+            sdir / out_r1,
+            log,
+        )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             cmd2 = ["FilterSeq.py","trimqual","-s",str(r2),"-q",q,"--outname",f"R2_tq{q}","--log",log.name]
@@ -517,6 +1474,15 @@ class U_FilterTrimQual(UnitSpec):
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_tq{q}")
             produced.append(Artifact(name="R2_trimqual", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            produced += _generate_quality_plots(
+                sdir,
+                idx,
+                self.id,
+                "R2",
+                r2,
+                sdir / out_r2,
+                log,
+            )
             sess.current["R2"] = "R2_trimqual"
         sess.current["R1"] = "R1_trimqual"
         for a in produced: sess.artifacts[a.name] = a
@@ -530,11 +1496,29 @@ class U_FilterMaskQual(UnitSpec):
         run_cmd(["FilterSeq.py","maskqual","-s",str(r1),"-q",q,"--outname",f"R1_mq{q}","--log",log.name], sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_mq{q}")
         produced = [Artifact(name="R1_maskqual", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        produced += _generate_maskqual_plots(
+            sdir,
+            idx,
+            self.id,
+            "R1",
+            r1,
+            sdir / out_r1,
+            log,
+        )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             run_cmd(["FilterSeq.py","maskqual","-s",str(r2),"-q",q,"--outname",f"R2_mq{q}","--log",log.name], sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_mq{q}")
             produced.append(Artifact(name="R2_maskqual", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            produced += _generate_maskqual_plots(
+                sdir,
+                idx,
+                self.id,
+                "R2",
+                r2,
+                sdir / out_r2,
+                log,
+            )
             sess.current["R2"] = "R2_maskqual"
         sess.current["R1"] = "R1_maskqual"
         for a in produced: sess.artifacts[a.name] = a
@@ -1100,6 +2084,19 @@ if (mode == "per_file") {{
             produced.append(a)
             sess.current["SC_TABLE"] = a.name
 
+        before_paths = [sess_dir / n for n in names if (sess_dir / n).exists()]
+        produced += _generate_sc_productive_plots(
+            sess_dir,
+            idx,
+            self.id,
+            before_paths,
+            pf,
+            fb,
+            log,
+        )
+        for a in produced:
+            sess.artifacts[a.name] = a
+
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
 class U_SC_RemoveMultiHeavy(UnitSpec):
@@ -1282,6 +2279,21 @@ if (mode == "per_file") {{
             produced.append(a)
             sess.current["SC_TABLE"] = a.name
 
+        before_paths = [sess_dir / n for n in names if (sess_dir / n).exists()]
+        produced += _generate_sc_multi_heavy_plots(
+            sess_dir,
+            idx,
+            self.id,
+            before_paths,
+            locus_field,
+            heavy_values,
+            cell_field,
+            fb,
+            log,
+        )
+        for a in produced:
+            sess.artifacts[a.name] = a
+
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
 class U_SC_RemoveNoHeavy(UnitSpec):
@@ -1442,6 +2454,22 @@ if (mode == "per_file") {{
             sess.artifacts[a.name] = a
             produced.append(a)
             sess.current["SC_TABLE"] = a.name
+
+        before_paths = [sess_dir / n for n in names if (sess_dir / n).exists()]
+        produced += _generate_sc_no_heavy_plots(
+            sess_dir,
+            idx,
+            self.id,
+            before_paths,
+            sfield if sfield else None,
+            locus_field,
+            heavy_value,
+            cell_field,
+            fb,
+            log,
+        )
+        for a in produced:
+            sess.artifacts[a.name] = a
 
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -1697,6 +2725,8 @@ def list_sessions(user: Dict[str, str] = Depends(_require_user)):
             state = SessionState.model_validate_json(state_file.read_text())
         except Exception:
             results.append({"session_id": entry.name, "group": "unknown"})
+            continue
+        if not state.steps:
             continue
         group = infer_group(state)
         results.append({

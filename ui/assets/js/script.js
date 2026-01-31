@@ -4,6 +4,7 @@ let UNITS_META = [];
 let PIPELINE = []; // keeps {id, unit, label, card, params} in the order of user clicks
 let PIPELINE_SEQ = 0; // simple counter for unique pipeline entries
 let HISTORY_SELECTED = null;
+let QC_OBJECT_URLS = [];
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -33,6 +34,14 @@ function unitCategory(id) {
 const FILTER_PREFIXES = ["filter_", "mask_primers_"];
 const FUNNEL_TONES = ["tone-1", "tone-2", "tone-3", "tone-4", "tone-5", "tone-6"];
 let FUNNEL_REQUEST_ID = 0;
+const QC_PLOT_LABELS = {
+  filter_quality: 'Quality score distribution',
+  filter_length: 'Read length distribution',
+  filter_missing: 'Missing bases (%N per read)',
+  filter_repeats: 'Max homopolymer length',
+  filter_trimqual: 'Trim quality (mean Phred)',
+  filter_maskqual: 'Masked bases (%N per read)'
+};
 
 function isFilteringUnit(unitId) {
   if (!unitId) {
@@ -211,6 +220,117 @@ function updateFilteringFunnel(state) {
     renderFilteringFunnel(mount, rows);
   })().catch(() => {
     mount.innerHTML = '<div class="muted">Unable to load read stats.</div>';
+  });
+}
+
+function clearQcPlotUrls() {
+  QC_OBJECT_URLS.forEach(url => URL.revokeObjectURL(url));
+  QC_OBJECT_URLS = [];
+}
+
+function extractPlotMeta(artifact) {
+  const name = artifact?.name || '';
+  const match = name.match(/(R[12])_(before|after|compare)$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    channel: match[1].toUpperCase(),
+    stage: match[2].toLowerCase()
+  };
+}
+
+function isPlotArtifact(artifact) {
+  if (!artifact) {
+    return false;
+  }
+  if (artifact.kind === 'plot') {
+    return true;
+  }
+  const path = String(artifact.path || '').toLowerCase();
+  return path.endsWith('.svg') && String(artifact.name || '').startsWith('plot_');
+}
+
+async function loadPlotImage(img, sid, artName) {
+  try {
+    const response = await apiFetch(`/session/${sid}/download/${encodeURIComponent(artName)}`);
+    if (!response.ok) {
+      img.alt = 'QC plot unavailable';
+      return;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    img.src = url;
+    img.alt = artName;
+    QC_OBJECT_URLS.push(url);
+  } catch (err) {
+    img.alt = 'QC plot unavailable';
+  }
+}
+
+function renderQcPlots(state) {
+  const mount = $('#qc-plots');
+  if (!mount) {
+    return;
+  }
+  clearQcPlotUrls();
+  const artifacts = Object.values(state?.artifacts || {}).filter(isPlotArtifact);
+  if (!artifacts.length) {
+    mount.innerHTML = '<div class="muted">No QC plots yet.</div>';
+    return;
+  }
+  const stepsByIndex = new Map();
+  (state.steps || []).forEach(step => stepsByIndex.set(step.step_index, step));
+  const groups = new Map();
+  artifacts.forEach(art => {
+    const meta = extractPlotMeta(art);
+    if (!meta) {
+      return;
+    }
+    const stepIndex = typeof art.from_step === 'number' ? art.from_step : -1;
+    if (!groups.has(stepIndex)) {
+      groups.set(stepIndex, { stepIndex, channels: {} });
+    }
+    const group = groups.get(stepIndex);
+    if (!group.channels[meta.channel]) {
+      group.channels[meta.channel] = { compare: null, before: null, after: null };
+    }
+    group.channels[meta.channel][meta.stage] = art;
+  });
+  const ordered = Array.from(groups.values()).sort((a, b) => a.stepIndex - b.stepIndex);
+  mount.innerHTML = '';
+  ordered.forEach(group => {
+    const step = stepsByIndex.get(group.stepIndex) || {};
+    const unitId = step.unit || '';
+    const label = QC_PLOT_LABELS[unitId] || getUnitLabel(unitId) || 'QC plot';
+    const header = document.createElement('div');
+    header.className = 'qc-group';
+    const title = document.createElement('div');
+    title.className = 'qc-title';
+    title.textContent = `Step ${group.stepIndex + 1}: ${label}`;
+    header.appendChild(title);
+    Object.entries(group.channels).forEach(([channel, stages]) => {
+      const row = document.createElement('div');
+      row.className = 'qc-row';
+      const card = document.createElement('div');
+      card.className = 'qc-card';
+      const art = stages.compare || stages.before || stages.after;
+      if (art) {
+        const img = document.createElement('img');
+        img.alt = `${label} ${channel} before/after`;
+        card.appendChild(img);
+        const cap = document.createElement('div');
+        cap.className = 'qc-caption';
+        cap.textContent = `${channel} before vs after`;
+        card.appendChild(cap);
+        loadPlotImage(img, SID, art.name);
+      } else {
+        card.innerHTML = `<div class="muted">No plot (${channel})</div>`;
+      }
+      row.appendChild(card);
+      header.appendChild(row);
+    });
+    mount.appendChild(header);
   });
 }
 
@@ -631,6 +751,7 @@ function applyStateSnapshot(state) {
   updatePrimerSelects(state);
   wireDownloadLinks();
   updateFilteringFunnel(state);
+  renderQcPlots(state);
 }
 
 async function refreshState() {
@@ -1135,9 +1256,14 @@ document.addEventListener('DOMContentLoaded', () => {
       setButtonRunning(button, false);
     }
   });
-  $('#pipe-clear')?.addEventListener('click', ()=>{
-    PIPELINE = [];
-    PIPELINE_SEQ = 0;
-    drawFlow(); $('#validation').textContent='—'; pipeMsg('Pipeline cleared');
+  $('#pipe-clear')?.addEventListener('click', async () => {
+    pipeMsg('Starting new session...');
+    try {
+      await startSession();
+      pipeMsg('New session started', 'ok');
+    } catch (err) {
+      console.error('startSession failed', err);
+      pipeMsg('Unable to start new session.', 'err');
+    }
   });
 });

@@ -4,6 +4,8 @@ let UNITS_META = [];
 let FLOW = []; // [{unitId,label,params}]
 let running = false;
 let HISTORY_SELECTED = null;
+let QC_OBJECT_URLS = [];
+let LAST_STATE = null;
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -122,6 +124,13 @@ function getUnitLabel(unitId) {
 const SC_FILTER_RE = /(filter|remove|productive)/i;
 const FUNNEL_TONES = ["tone-1", "tone-2", "tone-3", "tone-4", "tone-5", "tone-6"];
 let FUNNEL_REQUEST_ID = 0;
+const SC_QC_LABELS = {
+  sc_filter_productive: 'Productive vs non-productive',
+  sc_remove_multi_heavy: 'Multi-heavy filtering'
+};
+const SC_QC_STAGE_LABELS = {
+  ratio: 'counts'
+};
 
 function isFilteringUnit(unitId) {
   if (!unitId) {
@@ -310,6 +319,119 @@ function updateFilteringFunnel(state) {
   });
 }
 
+function clearQcPlotUrls() {
+  QC_OBJECT_URLS.forEach(url => URL.revokeObjectURL(url));
+  QC_OBJECT_URLS = [];
+}
+
+function isPlotArtifact(artifact) {
+  if (!artifact) {
+    return false;
+  }
+  if (artifact.kind === 'plot') {
+    return true;
+  }
+  const path = String(artifact.path || '').toLowerCase();
+  return path.endsWith('.svg') && String(artifact.name || '').startsWith('plot_');
+}
+
+function parseScPlotInfo(artifact) {
+  const name = String(artifact?.name || '');
+  if (!name.startsWith('plot_')) {
+    return null;
+  }
+  const parts = name.split('_');
+  if (parts.length < 4) {
+    return null;
+  }
+  const stepIndex = Number(parts[1]);
+  let stage = parts[parts.length - 1];
+  let unitParts = parts.slice(2, -1);
+  if (parts.length >= 5 && parts[parts.length - 2] === 'by' && parts[parts.length - 1] === 'sample') {
+    stage = 'by_sample';
+    unitParts = parts.slice(2, -2);
+  }
+  return {
+    stepIndex: Number.isFinite(stepIndex) ? stepIndex : null,
+    unitId: unitParts.join('_'),
+    stage
+  };
+}
+
+async function loadPlotImage(img, sid, artName) {
+  try {
+    const response = await apiFetch(`/session/${sid}/download/${encodeURIComponent(artName)}`);
+    if (!response.ok) {
+      img.alt = 'QC plot unavailable';
+      return;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    img.src = url;
+    img.alt = artName;
+    QC_OBJECT_URLS.push(url);
+  } catch (err) {
+    img.alt = 'QC plot unavailable';
+  }
+}
+
+function renderQcPlots(state) {
+  const mount = $('#qc-plots');
+  if (!mount) {
+    return;
+  }
+  clearQcPlotUrls();
+  const artifacts = Object.values(state?.artifacts || {}).filter(isPlotArtifact);
+  if (!artifacts.length) {
+    mount.innerHTML = '<div class="muted">No QC plots yet.</div>';
+    return;
+  }
+  const stepsByIndex = new Map();
+  (state.steps || []).forEach(step => stepsByIndex.set(step.step_index, step));
+  const groups = new Map();
+  artifacts.forEach(art => {
+    const info = parseScPlotInfo(art);
+    if (!info || info.stepIndex === null) {
+      return;
+    }
+    const key = `${info.stepIndex}:${info.unitId}`;
+    if (!groups.has(key)) {
+      groups.set(key, { stepIndex: info.stepIndex, unitId: info.unitId, plots: [] });
+    }
+    groups.get(key).plots.push({ art, stage: info.stage });
+  });
+  const ordered = Array.from(groups.values()).sort((a, b) => a.stepIndex - b.stepIndex);
+  mount.innerHTML = '';
+  ordered.forEach(group => {
+    const step = stepsByIndex.get(group.stepIndex) || {};
+    const unitId = group.unitId || step.unit || '';
+    const label = SC_QC_LABELS[unitId] || getUnitLabel(unitId) || 'QC plot';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'qc-group';
+    const title = document.createElement('div');
+    title.className = 'qc-title';
+    title.textContent = `Step ${group.stepIndex + 1}: ${label}`;
+    wrapper.appendChild(title);
+    const row = document.createElement('div');
+    row.className = 'qc-row';
+    group.plots.forEach(plot => {
+      const card = document.createElement('div');
+      card.className = 'qc-card';
+      const img = document.createElement('img');
+      img.alt = `${label} ${plot.stage || ''}`.trim();
+      card.appendChild(img);
+      const cap = document.createElement('div');
+      cap.className = 'qc-caption';
+      cap.textContent = SC_QC_STAGE_LABELS[plot.stage] || plot.stage || 'plot';
+      card.appendChild(cap);
+      row.appendChild(card);
+      loadPlotImage(img, SID, plot.art.name);
+    });
+    wrapper.appendChild(row);
+    mount.appendChild(wrapper);
+  });
+}
+
 // ----- Session (auto) -----
 async function ensureSession() {
   if (SID) {
@@ -321,6 +443,38 @@ async function ensureSession() {
   window.__SID__ = SID; // keep accessible, not visible
   await refreshState();
   return SID;
+}
+
+async function startNewSessionFromClear() {
+  const prevSid = SID;
+  SID = null;
+  window.__SID__ = null;
+  try {
+    await ensureSession();
+  } catch (err) {
+    SID = prevSid;
+    window.__SID__ = prevSid;
+    alert('Unable to start a new session.');
+    return;
+  }
+  FLOW = [];
+  renderFlow();
+  $('#validation').textContent = '—';
+  $('#pstate').textContent = 'idle';
+  resetPipelineProgress();
+  const uploadMsg = $('#upload-msg');
+  if (uploadMsg) {
+    uploadMsg.textContent = '';
+  }
+  const uploadedList = $('#uploaded-list');
+  if (uploadedList) {
+    uploadedList.innerHTML = '';
+  }
+  const fileInput = $('#sc-files');
+  if (fileInput) {
+    fileInput.value = '';
+  }
+  await loadHistory();
 }
 
 // ----- Upload -----
@@ -494,6 +648,34 @@ function collectParams(card){
   return params;
 }
 
+async function runSingle(card, unitId, label) {
+  if (!card || !unitId) {
+    return false;
+  }
+  const button = card.querySelector('.run');
+  const priorText = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Running...';
+  }
+  const params = collectParams(card);
+  if (!params.files || !String(params.files).trim()) {
+    const originInputs = getOriginScInputs(LAST_STATE);
+    if (originInputs.length) {
+      params.files = originInputs.join(', ');
+    }
+  }
+  try {
+    const ok = await runUnit({ unitId, label, params });
+    return ok;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = priorText || 'Run';
+    }
+  }
+}
+
 async function renderUnits() {
   await ensureSession();
   let allUnits = [];
@@ -652,10 +834,17 @@ async function runFlow() {
   setPipelineProgress(0, `Starting ${totalSteps} ${stepsLabel}`);
   for (let index = 0; index < totalSteps; index++) {
     const step = FLOW[index];
+    const params = { ...(step.params || {}) };
+    if (!params.files || !String(params.files).trim()) {
+      const scTable = LAST_STATE?.current?.SC_TABLE;
+      if (scTable) {
+        params.files = scTable;
+      }
+    }
     const runningMsg = `running step ${index + 1}/${totalSteps}: ${step.label}`;
     $('#pstate').textContent = runningMsg;
     setPipelineProgress((index / totalSteps) * 100, runningMsg);
-    const success = await runUnit(step, { skipHistory: true });
+    const success = await runUnit({ ...step, params }, { skipHistory: true });
     if (!success) {
       const failMsg = `failed at step ${index + 1}: ${step.label}`;
       $('#pstate').textContent = failMsg;
@@ -736,6 +925,7 @@ function wireDownloadLinks() {
 
 // ----- State / artifacts -----
 function applyStateSnapshot(state) {
+  LAST_STATE = state || null;
   const chips = Object.entries(state.current || {}).map(([key, value]) =>
     `<span class="pill">${esc(key)}: ${esc(value)}</span>`
   ).join(' ');
@@ -746,6 +936,29 @@ function applyStateSnapshot(state) {
   $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
   wireDownloadLinks();
   updateFilteringFunnel(state);
+  renderQcPlots(state);
+}
+
+function getOriginScInputs(state) {
+  if (!state) {
+    return [];
+  }
+  const aux = Array.isArray(state.aux_files) ? state.aux_files : [];
+  const auxInputs = aux.filter(name => {
+    const lower = String(name || '').toLowerCase();
+    return lower.endsWith('.tsv') || lower.endsWith('.tsv.gz');
+  });
+  if (auxInputs.length) {
+    return auxInputs;
+  }
+  const artifacts = Object.values(state.artifacts || {});
+  return artifacts
+    .filter(art => art && art.from_step === -1)
+    .map(art => art.path || art.name)
+    .filter(name => {
+      const lower = String(name || '').toLowerCase();
+      return lower.endsWith('.tsv') || lower.endsWith('.tsv.gz');
+    });
 }
 
 async function refreshState() {
@@ -1004,7 +1217,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#upload-sc').addEventListener('click', uploadSCFiles);
   $('#validate').addEventListener('click', validateFlow);
   $('#runflow').addEventListener('click', runFlow);
-  $('#clearflow').addEventListener('click', ()=>{ FLOW=[]; renderFlow(); $('#validation').textContent='—'; $('#pstate').textContent='idle'; resetPipelineProgress(); });
+  $('#clearflow').addEventListener('click', startNewSessionFromClear);
   $('#unit-search').addEventListener('input', applySearch);
   $('#expAll').addEventListener('click', expandAll);
   $('#colAll').addEventListener('click', collapseAll);
