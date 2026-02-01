@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="page" content="sitemap">
+  <title>Sitemap - ImmunoStream</title>
+
+  <link rel="stylesheet" href="assets/css/nav.css?v=20250320">
+  <script src="assets/js/auth.js?v=20250320" defer></script>
+  <script src="assets/js/nav.js?v=20250320" defer></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+    :root{
+      --bg-1:#f6f4ff;
+      --bg-2:#eef6ff;
+      --panel:#ffffff;
+      --ink:#0b1220;
+      --muted:#5b6b8a;
+      --border:rgba(11,18,32,.12);
+      --accent:#0ea5e9;
+      --accent-2:#22c55e;
+      --accent-3:#f97316;
+      --shadow:0 20px 60px rgba(2,6,23,.12);
+      --ring:0 0 0 3px rgba(14,165,233,.25);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:'Space Grotesk', system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color:var(--ink);
+      background:
+        radial-gradient(900px 500px at 10% 8%, rgba(14,165,233,.18), transparent 60%),
+        radial-gradient(600px 400px at 90% 18%, rgba(34,197,94,.18), transparent 60%),
+        linear-gradient(180deg,var(--bg-1) 0%, var(--bg-2) 100%);
+      min-height:100vh;
+    }
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:1120px;margin:0 auto;padding:28px}
+
+    .hero{
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-between;
+      gap:24px;
+      background:linear-gradient(135deg, rgba(255,255,255,.86), rgba(255,255,255,.75));
+      border:1px solid var(--border);
+      border-radius:22px;
+      padding:26px;
+      box-shadow:var(--shadow);
+      position:relative;
+      overflow:hidden;
+    }
+    .hero:before{
+      content:'';
+      position:absolute;
+      inset:-40px 40% 40px -40px;
+      background:linear-gradient(135deg, rgba(14,165,233,.18), rgba(34,197,94,.18));
+      filter:blur(18px);
+      opacity:.7;
+      pointer-events:none;
+    }
+    .hero h1{
+      margin:0 0 8px 0;
+      font-size:34px;
+      letter-spacing:.2px;
+    }
+    .hero p{margin:0;color:var(--muted);max-width:560px}
+    .hero .meta{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+    }
+    .pill{
+      font-family:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size:12px;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:rgba(255,255,255,.8);
+    }
+
+    .map-shell{
+      margin-top:22px;
+      border-radius:22px;
+      background:rgba(255,255,255,.78);
+      border:1px solid var(--border);
+      box-shadow:var(--shadow);
+      padding:24px;
+      position:relative;
+      overflow:hidden;
+    }
+    .map-shell:after{
+      content:'';
+      position:absolute;
+      inset:auto -20% -35% -20%;
+      height:240px;
+      background:radial-gradient(circle at 20% 20%, rgba(249,115,22,.22), transparent 60%);
+      pointer-events:none;
+    }
+
+    .map{
+      position:relative;
+      height:520px;
+      border-radius:18px;
+      background:linear-gradient(180deg, rgba(255,255,255,.7), rgba(255,255,255,.9));
+      border:1px solid rgba(11,18,32,.08);
+      overflow:hidden;
+    }
+    .map svg{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+    }
+
+    .node{
+      position:absolute;
+      min-width:160px;
+      padding:12px 14px;
+      border-radius:14px;
+      border:1px solid var(--border);
+      background:var(--panel);
+      box-shadow:0 10px 26px rgba(2,6,23,.12);
+      font-weight:600;
+      transition:transform .2s, box-shadow .2s, border-color .2s;
+      animation:fadeUp .6s ease both;
+      animation-delay:var(--delay,0s);
+    }
+    .node small{
+      display:block;
+      font-weight:500;
+      color:var(--muted);
+      margin-top:4px;
+      font-size:12px;
+    }
+    .node:hover{
+      transform:translateY(-3px);
+      border-color:rgba(14,165,233,.45);
+      box-shadow:0 16px 32px rgba(2,6,23,.14);
+    }
+    .node:focus-visible{outline:none;box-shadow:var(--ring)}
+
+    .node.core{background:linear-gradient(135deg, rgba(14,165,233,.12), rgba(34,197,94,.12));}
+    .node.api{border-color:rgba(14,165,233,.4)}
+    .node.data{border-color:rgba(34,197,94,.4)}
+    .node.page{border-color:rgba(249,115,22,.4)}
+
+    .legend{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:12px;
+      margin-top:18px;
+    }
+    .legend .tile{
+      background:rgba(255,255,255,.9);
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:12px 14px;
+      font-size:13px;
+      color:var(--muted);
+    }
+    .legend strong{color:var(--ink)}
+
+    @keyframes fadeUp{
+      from{opacity:0;transform:translateY(12px)}
+      to{opacity:1;transform:translateY(0)}
+    }
+
+    @media (max-width:980px){
+      .hero{flex-direction:column;align-items:flex-start}
+      .hero .meta{justify-content:flex-start}
+      .map{height:640px}
+    }
+    @media (max-width:720px){
+      .map{height:720px}
+      .legend{grid-template-columns:1fr}
+      .node{min-width:150px}
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <div>
+        <h1>Visual Sitemap</h1>
+        <p>View of ImmunoStream pages and the core service paths that power them.</p>
+      </div>
+      <div class="meta">
+        <span class="pill">UI: /ui</span>
+        <span class="pill">API: /auth, /session</span>
+        <span class="pill">Storage: /data</span>
+      </div>
+    </header>
+
+    <section class="map-shell">
+      <div class="map" role="img" aria-label="Sitemap showing UI pages connected to API and data storage">
+        <svg viewBox="0 0 1100 520" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="lineA" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#0ea5e9"/>
+              <stop offset="1" stop-color="#22c55e"/>
+            </linearGradient>
+            <linearGradient id="lineB" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#f97316"/>
+              <stop offset="1" stop-color="#0ea5e9"/>
+            </linearGradient>
+          </defs>
+          <path d="M250 140 L520 210" stroke="url(#lineB)" stroke-width="2" fill="none" opacity=".8"/>
+          <path d="M250 240 L520 210" stroke="url(#lineB)" stroke-width="2" fill="none" opacity=".7"/>
+          <path d="M250 340 L520 210" stroke="url(#lineB)" stroke-width="2" fill="none" opacity=".6"/>
+          <path d="M520 210 L830 140" stroke="url(#lineA)" stroke-width="2" fill="none" opacity=".8"/>
+          <path d="M520 210 L830 240" stroke="url(#lineA)" stroke-width="2" fill="none" opacity=".8"/>
+          <path d="M830 240 L980 360" stroke="url(#lineA)" stroke-width="2" fill="none" opacity=".7"/>
+          <path d="M830 140 L980 360" stroke="url(#lineA)" stroke-width="2" fill="none" opacity=".5"/>
+        </svg>
+
+        <a class="node page" href="/ui/" style="left:80px; top:110px; --delay:.05s">
+          Home
+          <small>Landing and entry points</small>
+        </a>
+        <a class="node page" href="/ui/blk.html" style="left:80px; top:210px; --delay:.12s">
+          Bulk amplicon
+          <small>pRESTO pipeline builder</small>
+        </a>
+        <a class="node page" href="/ui/sc.html" style="left:80px; top:310px; --delay:.18s">
+          Single-Cell AIRR
+          <small>Single-cell workflow</small>
+        </a>
+        <a class="node page" href="/ui/docs.html" style="left:80px; top:410px; --delay:.24s">
+          Documents
+          <small>Guides and notes</small>
+        </a>
+
+        <div class="node core" style="left:440px; top:180px; --delay:.2s">
+          FastAPI service
+          <small>auth, sessions, uploads, runs</small>
+        </div>
+
+        <div class="node api" style="left:700px; top:110px; --delay:.28s">
+          /auth/*
+          <small>register, login, me</small>
+        </div>
+        <div class="node api" style="left:700px; top:210px; --delay:.32s">
+          /session/*
+          <small>start, upload, run</small>
+        </div>
+
+        <div class="node data" style="left:880px; top:320px; --delay:.36s">
+          /data volume
+          <small>users, sessions, logs</small>
+        </div>
+      </div>
+
+      <div class="legend">
+        <div class="tile"><strong>Pages</strong> Live under <code>/ui</code> and are served by the same FastAPI app.</div>
+        <div class="tile"><strong>API</strong> Endpoints require a Bearer token stored in localStorage.</div>
+        <div class="tile"><strong>Storage</strong> JSON files and run artifacts are persisted to <code>/data</code>.</div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
