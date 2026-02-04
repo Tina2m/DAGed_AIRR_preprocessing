@@ -1152,7 +1152,7 @@ def find_pass_for_prefix(sess_dir: pathlib.Path, prefix: str) -> str:
     for ext in ("fastq.gz","fastq","fasta.gz","fasta"):
         for tag in ("mask-pass","align-primers-pass","primers-pass","extract-pass","score-pass", "quality-pass",
                     "length-pass","missing-pass","repeats-pass","trimqual-pass","maskqual-pass",
-                    "collapse-pass"):
+                    "collapse-unique","collapse-pass","collapse-fail","collapse-failed"):
             p = sess_dir / f"{prefix}_{tag}.{ext}"
             if p.exists(): return p.name
     raise HTTPException(500, f"Expected output not found for prefix '{prefix}'.")
@@ -1767,18 +1767,119 @@ class U_MaskPrimersExtract(UnitSpec):
 
 class U_CollapseSeq(UnitSpec):
     def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_CollapseSeq.log"
-        # default: collapse what's "current": R1
-        key = sess.current.get("R1")
-        if not key: raise HTTPException(400, "CollapseSeq needs a FASTQ to collapse (e.g., R1).")
-        src = sdir / sess.artifacts[key].path
-        outname = params.get("outname","COLLAPSE")
-        cmd = ["CollapseSeq.py","-s",str(src),"--outname",outname,"--log",log.name]
-        if params.get("act"): cmd += ["--act", str(params["act"])]
+        idx = _next_idx(sess)
+        log_name = (params.get("log") or "").strip()
+        if log_name:
+            if os.path.isabs(log_name) or "/" in log_name or "\\" in log_name:
+                raise HTTPException(400, "log must be a filename (no path separators).")
+            log = sdir / log_name
+        else:
+            log = sdir / f"{idx:03d}_CollapseSeq.log"
+
+        seq_path, input_channel = _resolve_input_sequence(sess, sdir, params)
+
+        outdir_param = (params.get("outdir") or "").strip()
+        outbase_dir = sdir
+        if outdir_param:
+            if os.path.isabs(outdir_param):
+                raise HTTPException(400, "outdir must be a relative path within the session.")
+            outbase_dir = (sdir / outdir_param).resolve()
+            if not str(outbase_dir).startswith(str(sdir.resolve())):
+                raise HTTPException(400, "outdir must be within the session directory.")
+            outbase_dir.mkdir(parents=True, exist_ok=True)
+
+        out_files_param = (params.get("out_files") or "").strip()
+        if out_files_param:
+            if outdir_param:
+                raise HTTPException(400, "out_files cannot be used with outdir.")
+            if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+                raise HTTPException(400, "out_files cannot be used with failed.")
+
+        cmd = ["CollapseSeq.py", "-s", str(seq_path), "--log", log.name]
+        if out_files_param:
+            out_files = [p for p in out_files_param.replace(",", " ").split() if p]
+            if len(out_files) != 1:
+                raise HTTPException(400, "out_files must contain exactly one filename.")
+            out_file = out_files[0]
+            out_file_path = (sdir / out_file).resolve()
+            if out_file_path.is_absolute() and not str(out_file_path).startswith(str(sdir.resolve())):
+                raise HTTPException(400, "out_files must be within the session directory.")
+            out_file_path.parent.mkdir(parents=True, exist_ok=True)
+            cmd += ["-o", out_file]
+        else:
+            outname = (params.get("outname") or "").strip()
+            if outdir_param:
+                cmd += ["--outdir", str(outbase_dir)]
+            if outname:
+                cmd += ["--outname", outname]
+
+        if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--failed"]
+        if str(params.get("fasta", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--fasta"]
+        if str(params.get("gzip_output", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--gzip-output"]
+
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+
+        max_missing = params.get("max_missing")
+        if max_missing not in (None, ""):
+            cmd += ["-n", str(max_missing)]
+
+        uniq_fields = (params.get("uniq_fields") or "").strip()
+        if uniq_fields:
+            cmd += ["--uf"] + [x.strip() for x in uniq_fields.replace(",", " ").split() if x.strip()]
+
+        copy_fields = (params.get("copy_fields") or "").strip()
+        if copy_fields:
+            cmd += ["--cf"] + [x.strip() for x in copy_fields.replace(",", " ").split() if x.strip()]
+
+        act = (params.get("act") or "").strip()
+        if act:
+            actions = [x.strip() for x in act.replace(",", " ").split() if x.strip()]
+            allowed = {"min", "max", "sum", "set"}
+            for item in actions:
+                if item not in allowed:
+                    raise HTTPException(400, f"Invalid act value: {item}. Use min,max,sum,set.")
+            cmd += ["--act"] + actions
+
+        if str(params.get("inner", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--inner"]
+        if str(params.get("keepmiss", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--keepmiss"]
+
+        max_field = (params.get("max_field") or "").strip()
+        min_field = (params.get("min_field") or "").strip()
+        if max_field and min_field:
+            raise HTTPException(400, "Choose either max_field or min_field (mutually exclusive).")
+        if max_field:
+            cmd += ["--maxf", max_field]
+        if min_field:
+            cmd += ["--minf", min_field]
+
         run_cmd(cmd, sdir, log)
-        a = Artifact(name="COLLAPSED", path=f"{outname}_collapse-pass.fastq.gz", kind="fastq", from_step=idx)
-        if not (sdir / a.path).exists(): a.path = f"{outname}_collapse-pass.fastq"
-        sess.artifacts[a.name] = a; sess.current["R1"] = a.name
+
+        if out_files_param:
+            out_rel = out_file
+        else:
+            prefix = (params.get("outname") or "").strip() or _default_outname_from_path(seq_path)
+            out_name = find_pass_for_prefix(outbase_dir, prefix)
+            rel_base = pathlib.Path(outdir_param) if outdir_param else pathlib.Path("")
+            out_rel = str(rel_base / out_name)
+
+        if not (sdir / out_rel).exists():
+            raise HTTPException(500, f"Expected output not found: {out_rel}")
+
+        kind = _detect_kind_from_name(out_rel) or _detect_kind_from_name(seq_path.name) or "fastq"
+        a = Artifact(name="COLLAPSED", path=out_rel, kind=kind, channel=input_channel or None, from_step=idx)
+        sess.artifacts[a.name] = a
+        if input_channel:
+            sess.current[input_channel] = a.name
         return StepResult(step_index=idx, unit=self.id, params=params, produced=[a])
 
 class U_BuildConsensus(UnitSpec):
@@ -2562,7 +2663,26 @@ UNITS: Dict[str, UnitSpec] = {
     ),
     "collapse_seq": U_CollapseSeq(
         id="collapse_seq", label="CollapseSeq (deduplicate)", requires=[], group="bulk",
-        params_schema={"outname":{"type":"text","default":"COLLAPSE"}, "act":{"type":"select","options":["","min","max","sum","set","majority"],"default":""}}
+        params_schema={
+            "input_artifact":{"type":"text","label":"Input artifact","placeholder":"artifact key or filename (optional)"},
+            "input_channel":{"type":"select","label":"Input channel","options":["R1","R2"],"default":"R1"},
+            "outname":{"type":"text","label":"Outname","default":"COLLAPSE","placeholder":"leave blank to use input name"},
+            "outdir":{"type":"text","label":"Outdir","placeholder":"relative folder (optional)"},
+            "out_files":{"type":"text","label":"Out files","placeholder":"explicit filename (disables outdir/outname/failed)"},
+            "log":{"type":"text","label":"Log file","placeholder":"optional log filename"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "gzip_output":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "max_missing":{"type":"int","label":"Max missing","min":0},
+            "uniq_fields":{"type":"text","label":"Uniq fields","placeholder":"field1 field2"},
+            "copy_fields":{"type":"text","label":"Copy fields","placeholder":"field1 field2"},
+            "act":{"type":"text","placeholder":"min,max,sum,set (comma sep)"},
+            "inner":{"type":"checkbox","default":False},
+            "keepmiss":{"type":"checkbox","default":False},
+            "max_field":{"type":"text","label":"Max field","placeholder":"field name"},
+            "min_field":{"type":"text","label":"Min field","placeholder":"field name"},
+        }
     ),
     "build_consensus": U_BuildConsensus(
         id="build_consensus", label="BuildConsensus", requires=[], group="bulk",

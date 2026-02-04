@@ -1125,6 +1125,20 @@ async function renderUnits(){
     sum.innerHTML = `<span class="group-title">${esc(cat)}</span><span class="group-count">${byCat[cat].length}</span>`;
     const body = document.createElement('div'); body.className = 'group-body';
     byCat[cat].forEach(card => body.appendChild(card));
+    const closeRow = document.createElement('div');
+    closeRow.className = 'group-end-actions';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'group-close-btn';
+    closeBtn.title = `Collapse ${cat}`;
+    closeBtn.setAttribute('aria-label', `Collapse ${cat}`);
+    closeBtn.innerHTML = '<span class="group-close-icon" aria-hidden="true"></span>';
+    closeBtn.addEventListener('click', () => {
+      det.open = false;
+      sum.scrollIntoView({ block: 'nearest' });
+    });
+    closeRow.appendChild(closeBtn);
+    body.appendChild(closeRow);
 
     det.appendChild(sum); det.appendChild(body);
     mount.appendChild(det);
