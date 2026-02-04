@@ -30,6 +30,8 @@
     a{color:var(--accent);text-decoration:none}
     a:hover{text-decoration:underline}
     code{background:#f3f4f6;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
+    .title-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .title-row h1{margin-bottom:0}
     .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;max-width:1500px;margin:0 auto}
     .left{flex:0 0 34%;max-width:34%;min-width:0}
     .center{flex:0 0 42%;max-width:42%;min-width:0;position:sticky;top:12px;align-self:flex-start;display:flex;flex-direction:column;gap:16px}
@@ -115,6 +117,68 @@
     .history-list-window{
       max-height:min(72vh, 560px);
     }
+    .run-history-item{
+      display:flex;
+      align-items:flex-start;
+      gap:8px;
+    }
+    .run-history-open{
+      flex:1;
+      min-width:0;
+      border:none;
+      background:transparent;
+      color:inherit;
+      text-align:left;
+      padding:0;
+      cursor:pointer;
+    }
+    .run-history-open strong{
+      display:block;
+      overflow-wrap:anywhere;
+    }
+    .run-history-open small{
+      display:block;
+    }
+    .run-history-delete{
+      width:24px;
+      height:24px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#fff;
+      color:var(--muted);
+      padding:0;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      line-height:1;
+      cursor:pointer;
+    }
+    .run-history-delete:hover{
+      background:#fee2e2;
+      color:var(--err);
+    }
+    .run-history-actions{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      align-items:center;
+    }
+    .run-history-rename{
+      border:1px solid var(--border);
+      background:#fff;
+      color:var(--muted);
+      border-radius:999px;
+      min-width:24px;
+      height:24px;
+      font-size:10px;
+      padding:0 6px;
+      cursor:pointer;
+      text-transform:lowercase;
+    }
+    .run-history-rename:hover{
+      background:#eef2ff;
+      color:var(--accent);
+    }
     pre{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:10px;max-height:260px;overflow:auto}
     @media (max-width:1100px){
       .wrap{flex-direction:column}
@@ -132,7 +196,11 @@
   <div class="wrap">
     <main class="left">
       <div class="panel">
-        <h1>ImmunoStream – Bulk amplicon <span class="chip">session:<span id="sid" style="opacity:.7">—</span></span></h1>
+        <div class="title-row">
+          <h1>ImmunoStream – Bulk amplicon</h1>
+          <button id="session-new" class="secondary" type="button">New</button>
+        </div>
+        <span id="sid" hidden>—</span>
 
         <h2>Upload</h2>
         <div class="grid upload-grid">
@@ -185,6 +253,7 @@
         <div class="row mt8">
           <button id="pipe-validate" class="secondary">Validate</button>
           <button id="pipe-run">Run pipeline</button>
+          <button id="pipe-stop" class="secondary" disabled>Stop</button>
           <button id="pipe-clear" class="secondary">Clear</button>
           <span id="pipe-msg" class="muted"></span>
         </div>
@@ -232,6 +301,6 @@
     </aside>
   </div>
 
-  <script defer src="assets/js/script.js?v=20250320"></script>
+  <script defer src="assets/js/script.js?v=20260204"></script>
 </body>
 </html>

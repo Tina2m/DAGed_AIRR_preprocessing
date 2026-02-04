@@ -6,6 +6,9 @@ import pathlib
 import shutil
 import subprocess
 import csv
+import re
+import threading
+import contextvars
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Literal, Any
 
@@ -36,6 +39,10 @@ BASE = pathlib.Path("/data")
 BASE.mkdir(parents=True, exist_ok=True)
 
 auth_scheme = HTTPBearer(auto_error=False)
+RUNNING_PROCS: Dict[str, subprocess.Popen] = {}
+CANCEL_REQUESTED: set[str] = set()
+RUNNING_LOCK = threading.Lock()
+CURRENT_RUN_SID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_run_sid", default=None)
 
 
 def _now_iso() -> str:
@@ -69,6 +76,40 @@ def _load_session_for_user(user: Dict[str, str], session_id: str) -> tuple[pathl
     if state.owner_user_id and state.owner_user_id != user["user_id"]:
         raise HTTPException(status_code=403, detail="Access denied for this session.")
     return session_dir, state
+
+
+def _set_running_proc(session_id: str, proc: subprocess.Popen):
+    with RUNNING_LOCK:
+        RUNNING_PROCS[session_id] = proc
+
+
+def _get_running_proc(session_id: str) -> Optional[subprocess.Popen]:
+    with RUNNING_LOCK:
+        return RUNNING_PROCS.get(session_id)
+
+
+def _clear_running_proc(session_id: str, proc: Optional[subprocess.Popen] = None):
+    with RUNNING_LOCK:
+        if proc is None:
+            RUNNING_PROCS.pop(session_id, None)
+            return
+        if RUNNING_PROCS.get(session_id) is proc:
+            RUNNING_PROCS.pop(session_id, None)
+
+
+def _request_cancel(session_id: str):
+    with RUNNING_LOCK:
+        CANCEL_REQUESTED.add(session_id)
+
+
+def _clear_cancel_request(session_id: str):
+    with RUNNING_LOCK:
+        CANCEL_REQUESTED.discard(session_id)
+
+
+def _is_cancel_requested(session_id: str) -> bool:
+    with RUNNING_LOCK:
+        return session_id in CANCEL_REQUESTED
 
 # --------- Models ----------
 class UnitSpec(BaseModel):
@@ -164,6 +205,9 @@ def save_state(sess_dir: pathlib.Path, s: SessionState):
 
 # --------- run_cmd: add --nproc when supported, retry w/o ----------
 def run_cmd(cmd: List[str], cwd: pathlib.Path, log_file: pathlib.Path):
+    sid = CURRENT_RUN_SID.get()
+    if sid and _is_cancel_requested(sid):
+        raise RuntimeError("Run cancelled by user.")
     nproc = os.cpu_count() or 2
     tool = pathlib.Path(cmd[0]).name
     NPROC_TOOLS = {
@@ -178,7 +222,16 @@ def run_cmd(cmd: List[str], cwd: pathlib.Path, log_file: pathlib.Path):
     with open(log_file, "ab") as log:
         log.write(("[CMD] " + " ".join(final_cmd) + "\n").encode())
         proc = subprocess.Popen(final_cmd, cwd=cwd, stdout=log, stderr=log)
-        rc = proc.wait()
+        if sid:
+            _set_running_proc(sid, proc)
+        try:
+            rc = proc.wait()
+        finally:
+            if sid:
+                _clear_running_proc(sid, proc)
+
+    if sid and _is_cancel_requested(sid):
+        raise RuntimeError("Run cancelled by user.")
 
     if rc != 0 and "--nproc" in final_cmd:
         # auto-retry without --nproc if unrecognized
@@ -189,8 +242,18 @@ def run_cmd(cmd: List[str], cwd: pathlib.Path, log_file: pathlib.Path):
                 with open(log_file, "ab") as log:
                     log.write(b"[RETRY] removing --nproc\n")
                     p2 = subprocess.Popen(retry, cwd=cwd, stdout=log, stderr=log)
-                    if p2.wait() == 0:
+                    if sid:
+                        _set_running_proc(sid, p2)
+                    try:
+                        rc2 = p2.wait()
+                    finally:
+                        if sid:
+                            _clear_running_proc(sid, p2)
+                    if sid and _is_cancel_requested(sid):
+                        raise RuntimeError("Run cancelled by user.")
+                    if rc2 == 0:
                         return
+                    rc = rc2
         except Exception:
             pass
 
@@ -2783,6 +2846,10 @@ class RunBody(BaseModel):
     params: Dict[str, Any] = {}
 
 
+class RenameSessionBody(BaseModel):
+    new_session_id: str
+
+
 class AuthBody(BaseModel):
     username: str
     password: str
@@ -2874,6 +2941,67 @@ def start_session(user: Dict[str, str] = Depends(_require_user)):
     save_state(sdir, state)
     return {"session_id": sid}
 
+@app.delete("/session/{sid}")
+def delete_session(sid: str, user: Dict[str, str] = Depends(_require_user)):
+    sdir, _ = _load_session_for_user(user, sid)
+    try:
+        shutil.rmtree(sdir)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {exc}")
+    return {"ok": True, "session_id": sid}
+
+@app.patch("/session/{sid}/rename")
+def rename_session(
+    sid: str,
+    body: RenameSessionBody = Body(...),
+    user: Dict[str, str] = Depends(_require_user),
+):
+    sdir, state = _load_session_for_user(user, sid)
+    new_sid = (body.new_session_id or "").strip()
+    if not new_sid:
+        raise HTTPException(status_code=400, detail="New session ID cannot be empty.")
+    if len(new_sid) > 80:
+        raise HTTPException(status_code=400, detail="New session ID is too long (max 80 characters).")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", new_sid):
+        raise HTTPException(
+            status_code=400,
+            detail="New session ID can only contain letters, numbers, dot, underscore, and hyphen.",
+        )
+    if new_sid == sid:
+        return {"ok": True, "old_session_id": sid, "new_session_id": new_sid}
+
+    target_dir = _session_dir_for_user(user["user_id"], new_sid)
+    if target_dir.exists():
+        raise HTTPException(status_code=409, detail="A session with that name already exists.")
+
+    try:
+        shutil.move(str(sdir), str(target_dir))
+        state.session_id = new_sid
+        save_state(target_dir, state)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to rename session: {exc}")
+
+    return {"ok": True, "old_session_id": sid, "new_session_id": new_sid}
+
+@app.post("/session/{sid}/cancel")
+def cancel_session_run(sid: str, user: Dict[str, str] = Depends(_require_user)):
+    _ = _load_session_for_user(user, sid)
+    _request_cancel(sid)
+    proc = _get_running_proc(sid)
+    was_running = bool(proc and proc.poll() is None)
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        except Exception:
+            pass
+    return {"ok": True, "session_id": sid, "was_running": was_running}
+
 @app.get("/session/{sid}/units")
 def list_units(sid: str, user: Dict[str, str] = Depends(_require_user)):
     _ = _load_session_for_user(user, sid)
@@ -2945,6 +3073,7 @@ def run_unit(
     user: Dict[str, str] = Depends(_require_user),
 ):
     sdir, sess = _load_session_for_user(user, sid)
+    _clear_cancel_request(sid)
     unit = UNITS.get(body.unit_id)
     if not unit:
         raise HTTPException(404, f"Unknown unit_id '{body.unit_id}'")
@@ -2953,6 +3082,7 @@ def run_unit(
         if ch not in sess.current:
             raise HTTPException(400, f"Unit '{unit.id}' requires channel {ch} to be available.")
     step_idx = len(sess.steps)
+    token = CURRENT_RUN_SID.set(sid)
     try:
         step = unit.run(sess, sdir, body.params)
         sess.steps.append(step)
@@ -2966,9 +3096,14 @@ def run_unit(
             try: tail += p.read_text(errors="ignore") + "\n\n"
             except: pass
         if len(tail) > 5000: tail = tail[-5000:]
+        if "cancelled by user" in str(e).lower():
+            raise HTTPException(status_code=409, detail={"error": "Run cancelled by user.", "log_tail": tail})
         section = _last_log_section(logs[-1]) if logs else ""
         err_text = _format_error_with_log(str(e), section)
         raise HTTPException(status_code=500, detail={"error": err_text, "log_tail": tail})
+    finally:
+        CURRENT_RUN_SID.reset(token)
+        _clear_running_proc(sid)
 
 @app.get("/session/{sid}/state")
 def get_state(sid: str, user: Dict[str, str] = Depends(_require_user)):

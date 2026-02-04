@@ -5,6 +5,9 @@ let PIPELINE = []; // keeps {id, unit, label, card, params} in the order of user
 let PIPELINE_SEQ = 0; // simple counter for unique pipeline entries
 let HISTORY_SELECTED = null;
 let QC_OBJECT_URLS = [];
+let STOP_REQUESTED = false;
+let PIPELINE_RUNNING = false;
+let LAST_RUN_WAS_CANCELLED = false;
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -153,13 +156,14 @@ function updateFilteringFunnel(state) {
   if (!mount) {
     return;
   }
+  // Always bump the request token so stale async log reads cannot repaint old data.
+  const requestId = ++FUNNEL_REQUEST_ID;
   const steps = Array.isArray(state?.steps) ? state.steps : [];
   const filterSteps = steps.filter(step => isFilteringUnit(step?.unit || ''));
   if (!filterSteps.length) {
     mount.innerHTML = '<div class="muted">No filtering steps run yet.</div>';
     return;
   }
-  const requestId = ++FUNNEL_REQUEST_ID;
   mount.innerHTML = '<div class="muted">Loading read stats...</div>';
 
   (async () => {
@@ -495,6 +499,28 @@ function setRunStatus(text) {
   $('#run-status').innerHTML = text;
 }
 
+function setStopButtonEnabled(enabled) {
+  const button = $('#pipe-stop');
+  if (!button) {
+    return;
+  }
+  button.disabled = !enabled;
+}
+
+async function requestStopCurrentRun() {
+  STOP_REQUESTED = true;
+  if (!SID) {
+    return;
+  }
+  setRunStatus('Stopping…');
+  pipeMsg('Stopping current run…', 'warn');
+  try {
+    await apiFetch(`/session/${SID}/cancel`, { method: 'POST' });
+  } catch (err) {
+    // Frontend should still stop queuing additional steps even if cancel call fails.
+  }
+}
+
 function setProgress(current, total) {
   const percentage = total ? Math.round((current / total) * 100) : 0;
   $('#run-bar').style.width = percentage + '%';
@@ -533,7 +559,11 @@ async function startSession() {
   const response = await apiFetch('/session/start', { method: 'POST' });
   const data = await response.json();
   SID = data.session_id;
-  $('#sid').textContent = SID;
+  HISTORY_SELECTED = null;
+  const sidEl = $('#sid');
+  if (sidEl) {
+    sidEl.textContent = SID;
+  }
   PIPELINE = []; // reset
   PIPELINE_SEQ = 0;
   await renderUnits();
@@ -544,6 +574,10 @@ async function startSession() {
   setProgress(0, 1);
   setUploadReadsStatus('', 'info');
   await loadHistory();
+}
+
+async function startFreshSessionLikeRefresh() {
+  window.location.reload();
 }
 
 async function uploadReads() {
@@ -724,7 +758,11 @@ async function runUnit(card, unitId, forcedParams, opts = {}) {
   const data = await response.json();
   if (!response.ok) {
     const errorMsg = (data.detail && (data.detail.error || data.detail)) || response.statusText;
-    alert(`Error: ${errorMsg}`);
+    const cancelled = /cancelled by user/i.test(String(errorMsg));
+    LAST_RUN_WAS_CANCELLED = cancelled;
+    if (!cancelled) {
+      alert(`Error: ${errorMsg}`);
+    }
     $('#log').textContent = (data.detail && data.detail.log_tail) ? data.detail.log_tail : '';
     return false;
   }
@@ -917,6 +955,92 @@ async function loadHistoryDetails(sid) {
   }
 }
 
+async function deleteHistorySession(sid) {
+  if (!sid) {
+    return;
+  }
+  const ok = window.confirm(`Delete session ${sid}? This cannot be undone.`);
+  if (!ok) {
+    return;
+  }
+  try {
+    const response = await apiFetch(`/session/${sid}`, { method: 'DELETE' });
+    if (!response.ok) {
+      let message = 'Unable to delete session.';
+      try {
+        const data = await response.json();
+        if (data?.detail) {
+          message = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        }
+      } catch (err) {
+        // best-effort parse
+      }
+      throw new Error(message);
+    }
+    if (HISTORY_SELECTED === sid) {
+      HISTORY_SELECTED = null;
+    }
+    if (SID === sid) {
+      await startSession();
+      pipeMsg('Session deleted. Started a new session.', 'ok');
+      return;
+    }
+    await loadHistory();
+    pipeMsg('Session deleted.', 'ok');
+  } catch (err) {
+    pipeMsg(err?.message || 'Unable to delete session.', 'err');
+  }
+}
+
+async function renameHistorySession(sid) {
+  if (!sid) {
+    return;
+  }
+  const raw = window.prompt('Enter new session name:', sid);
+  if (raw === null) {
+    return;
+  }
+  const newSid = raw.trim();
+  if (!newSid || newSid === sid) {
+    return;
+  }
+  try {
+    const response = await apiFetch(`/session/${sid}/rename`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_session_id: newSid })
+    });
+    if (!response.ok) {
+      let message = 'Unable to rename session.';
+      try {
+        const data = await response.json();
+        if (data?.detail) {
+          message = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        }
+      } catch (err) {
+        // best-effort parse
+      }
+      throw new Error(message);
+    }
+    const payload = await response.json();
+    const updatedSid = payload?.new_session_id || newSid;
+    if (HISTORY_SELECTED === sid) {
+      HISTORY_SELECTED = updatedSid;
+    }
+    if (SID === sid) {
+      SID = updatedSid;
+      const sidEl = $('#sid');
+      if (sidEl) {
+        sidEl.textContent = updatedSid;
+      }
+    }
+    await loadHistory();
+    pipeMsg(`Session renamed to ${updatedSid}.`, 'ok');
+  } catch (err) {
+    pipeMsg(err?.message || 'Unable to rename session.', 'err');
+  }
+}
+
 async function loadHistory() {
   const list = $('#history-list');
   if (!list) {
@@ -944,10 +1068,9 @@ async function loadHistory() {
     }
     list.innerHTML = '';
     sorted.forEach(session => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'run-history-item';
-      button.dataset.sid = session.session_id;
+      const row = document.createElement('div');
+      row.className = 'run-history-item';
+      row.dataset.sid = session.session_id;
       const meta = [];
       const time = formatTimestamp(session.updated_at || session.created_at);
       if (time !== 'unknown') {
@@ -959,9 +1082,42 @@ async function loadHistory() {
       if (typeof session.artifacts === 'number') {
         meta.push(`${session.artifacts} artifact${session.artifacts === 1 ? '' : 's'}`);
       }
-      button.innerHTML = `<strong>${esc(session.session_id)}</strong><small>${esc(meta.join(' | '))}</small>`;
-      button.addEventListener('click', () => loadHistoryDetails(session.session_id));
-      list.appendChild(button);
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'run-history-open';
+      openBtn.innerHTML = `<strong>${esc(session.session_id)}</strong><small>${esc(meta.join(' | '))}</small>`;
+      openBtn.addEventListener('click', () => loadHistoryDetails(session.session_id));
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'run-history-delete';
+      delBtn.title = `Delete ${session.session_id}`;
+      delBtn.setAttribute('aria-label', `Delete ${session.session_id}`);
+      delBtn.textContent = 'x';
+      delBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        deleteHistorySession(session.session_id);
+      });
+
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'run-history-rename';
+      renameBtn.title = `Rename ${session.session_id}`;
+      renameBtn.setAttribute('aria-label', `Rename ${session.session_id}`);
+      renameBtn.textContent = 'edit';
+      renameBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        renameHistorySession(session.session_id);
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'run-history-actions';
+      actions.appendChild(renameBtn);
+      actions.appendChild(delBtn);
+
+      row.appendChild(openBtn);
+      row.appendChild(actions);
+      list.appendChild(row);
     });
     if (HISTORY_SELECTED) {
       setHistoryActive(HISTORY_SELECTED);
@@ -1225,6 +1381,10 @@ async function runLinearPipeline(){
   const steps = selectedSteps();
   const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
   if(bulkSteps.length === 0){ pipeMsg('No bulk steps selected','warn'); return; }
+  STOP_REQUESTED = false;
+  LAST_RUN_WAS_CANCELLED = false;
+  PIPELINE_RUNNING = true;
+  setStopButtonEnabled(true);
   if(bulkSteps.length !== steps.length){
     pipeMsg('Single-cell units removed from pipeline','warn');
   }
@@ -1232,11 +1392,21 @@ async function runLinearPipeline(){
   setRunStatus('Starting…'); setProgress(0, bulkSteps.length);
 
   for(let i=0;i<bulkSteps.length;i++){
+    if (STOP_REQUESTED) {
+      setRunStatus(`Stopped (${i}/${bulkSteps.length})`);
+      pipeMsg('Pipeline stopped','warn');
+      return;
+    }
     const s = bulkSteps[i];
     setRunStatus(`Running <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`);
     const ok = await runUnit(s.card, s.unit, s.params, { skipHistory: true });
     setProgress(i+1, bulkSteps.length);
     if(!ok){
+      if (STOP_REQUESTED || LAST_RUN_WAS_CANCELLED) {
+        setRunStatus(`Stopped at <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`);
+        pipeMsg('Pipeline stopped','warn');
+        return;
+      }
       setRunStatus(`Failed at <b>${esc(s.label)}</b> (${i+1}/${bulkSteps.length})`);
       pipeMsg('Pipeline failed','err');
       return;
@@ -1247,8 +1417,14 @@ async function runLinearPipeline(){
 
 
 async function runPipeline(){
-  await runLinearPipeline();
-  await loadHistory();
+  try {
+    await runLinearPipeline();
+    await loadHistory();
+  } finally {
+    PIPELINE_RUNNING = false;
+    setStopButtonEnabled(false);
+    STOP_REQUESTED = false;
+  }
 }
 
 /* ===== Wire up ===== */
@@ -1259,6 +1435,7 @@ document.addEventListener('DOMContentLoaded', () => {
   startSession();
   $('#upload')?.addEventListener('click', uploadReads);
   $('#upload-aux')?.addEventListener('click', uploadAux);
+  $('#session-new')?.addEventListener('click', startFreshSessionLikeRefresh);
   $('#history-refresh')?.addEventListener('click', loadHistory);
   $('#pipe-validate')?.addEventListener('click', validatePipeline);
   $('#pipe-run')?.addEventListener('click', async (event) => {
@@ -1270,14 +1447,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setButtonRunning(button, false);
     }
   });
-  $('#pipe-clear')?.addEventListener('click', async () => {
-    pipeMsg('Starting new session...');
-    try {
-      await startSession();
-      pipeMsg('New session started', 'ok');
-    } catch (err) {
-      console.error('startSession failed', err);
-      pipeMsg('Unable to start new session.', 'err');
-    }
-  });
+  $('#pipe-stop')?.addEventListener('click', requestStopCurrentRun);
+  $('#pipe-clear')?.addEventListener('click', startFreshSessionLikeRefresh);
+  setStopButtonEnabled(false);
 });

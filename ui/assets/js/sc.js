@@ -6,6 +6,8 @@ let running = false;
 let HISTORY_SELECTED = null;
 let QC_OBJECT_URLS = [];
 let LAST_STATE = null;
+let STOP_REQUESTED = false;
+let LAST_RUN_WAS_CANCELLED = false;
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -785,6 +787,28 @@ function resetPipelineProgress() {
   setPipelineProgress(0, 'Waiting to run');
 }
 
+function setStopFlowEnabled(enabled) {
+  const button = $('#stopflow');
+  if (!button) {
+    return;
+  }
+  button.disabled = !enabled;
+}
+
+async function requestStopCurrentFlow() {
+  STOP_REQUESTED = true;
+  if (!SID) {
+    return;
+  }
+  $('#pstate').textContent = 'stopping...';
+  setPipelineProgress(null, 'Stopping current run...');
+  try {
+    await apiFetch(`/session/${SID}/cancel`, { method: 'POST' });
+  } catch (err) {
+    // Keep local stop intent even if API request fails.
+  }
+}
+
 // ----- Validation & run -----
 function validateFlow() {
   if (FLOW.length === 0) {
@@ -827,38 +851,54 @@ async function runFlow() {
     return;
   }
   running = true;
+  STOP_REQUESTED = false;
+  LAST_RUN_WAS_CANCELLED = false;
+  setStopFlowEnabled(true);
   const totalSteps = FLOW.length;
   const stepsLabel = `step${totalSteps === 1 ? '' : 's'}`;
   const startMsg = `starting (${totalSteps} ${stepsLabel})...`;
   $('#pstate').textContent = startMsg;
   setPipelineProgress(0, `Starting ${totalSteps} ${stepsLabel}`);
-  for (let index = 0; index < totalSteps; index++) {
-    const step = FLOW[index];
-    const params = { ...(step.params || {}) };
-    if (!params.files || !String(params.files).trim()) {
-      const scTable = LAST_STATE?.current?.SC_TABLE;
-      if (scTable) {
-        params.files = scTable;
+  try {
+    for (let index = 0; index < totalSteps; index++) {
+      if (STOP_REQUESTED) {
+        $('#pstate').textContent = `stopped at ${index}/${totalSteps}`;
+        setPipelineProgress((index / totalSteps) * 100, `Stopped at step ${index}/${totalSteps}`);
+        return;
       }
+      const step = FLOW[index];
+      const params = { ...(step.params || {}) };
+      if (!params.files || !String(params.files).trim()) {
+        const scTable = LAST_STATE?.current?.SC_TABLE;
+        if (scTable) {
+          params.files = scTable;
+        }
+      }
+      const runningMsg = `running step ${index + 1}/${totalSteps}: ${step.label}`;
+      $('#pstate').textContent = runningMsg;
+      setPipelineProgress((index / totalSteps) * 100, runningMsg);
+      const success = await runUnit({ ...step, params }, { skipHistory: true });
+      if (!success) {
+        if (STOP_REQUESTED || LAST_RUN_WAS_CANCELLED) {
+          $('#pstate').textContent = `stopped at step ${index + 1}: ${step.label}`;
+          setPipelineProgress((index / totalSteps) * 100, `Stopped at step ${index + 1}/${totalSteps}`);
+          return;
+        }
+        const failMsg = `failed at step ${index + 1}: ${step.label}`;
+        $('#pstate').textContent = failMsg;
+        setPipelineProgress((index / totalSteps) * 100, `Failed at step ${index + 1}/${totalSteps}`);
+        return;
+      }
+      setPipelineProgress(((index + 1) / totalSteps) * 100, `Completed ${index + 1}/${totalSteps}`);
     }
-    const runningMsg = `running step ${index + 1}/${totalSteps}: ${step.label}`;
-    $('#pstate').textContent = runningMsg;
-    setPipelineProgress((index / totalSteps) * 100, runningMsg);
-    const success = await runUnit({ ...step, params }, { skipHistory: true });
-    if (!success) {
-      const failMsg = `failed at step ${index + 1}: ${step.label}`;
-      $('#pstate').textContent = failMsg;
-      setPipelineProgress((index / totalSteps) * 100, `Failed at step ${index + 1}/${totalSteps}`);
-      await loadHistory();
-      running = false;
-      return;
-    }
-    setPipelineProgress(((index + 1) / totalSteps) * 100, `Completed ${index + 1}/${totalSteps}`);
+    $('#pstate').textContent = 'finished ✓';
+    setPipelineProgress(100, 'Pipeline complete');
+  } finally {
+    await loadHistory();
+    running = false;
+    setStopFlowEnabled(false);
+    STOP_REQUESTED = false;
   }
-  $('#pstate').textContent = 'finished ✓';
-  setPipelineProgress(100, 'Pipeline complete');
-  await loadHistory();
-  running = false;
 }
 
 async function runUnit(step, opts = {}){
@@ -872,7 +912,11 @@ async function runUnit(step, opts = {}){
     const j = await r.json();
     if(!r.ok){
       const detail = (j.detail && (j.detail.error || j.detail)) || r.statusText;
-      alert(`Error: ${detail}`);
+      const cancelled = /cancelled by user/i.test(String(detail));
+      LAST_RUN_WAS_CANCELLED = cancelled;
+      if (!cancelled) {
+        alert(`Error: ${detail}`);
+      }
       $('#log').textContent = (j.detail && j.detail.log_tail) ? j.detail.log_tail : '';
       return false;
     }
@@ -1120,6 +1164,86 @@ async function loadHistoryDetails(sid) {
   }
 }
 
+async function deleteHistorySession(sid) {
+  if (!sid) {
+    return;
+  }
+  const ok = window.confirm(`Delete session ${sid}? This cannot be undone.`);
+  if (!ok) {
+    return;
+  }
+  try {
+    const response = await apiFetch(`/session/${sid}`, { method: 'DELETE' });
+    if (!response.ok) {
+      let message = 'Unable to delete session.';
+      try {
+        const data = await response.json();
+        if (data?.detail) {
+          message = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        }
+      } catch (err) {
+        // best-effort parse
+      }
+      throw new Error(message);
+    }
+    if (HISTORY_SELECTED === sid) {
+      HISTORY_SELECTED = null;
+    }
+    if (SID === sid) {
+      await startNewSessionFromClear();
+      return;
+    }
+    await loadHistory();
+  } catch (err) {
+    alert(err?.message || 'Unable to delete session.');
+  }
+}
+
+async function renameHistorySession(sid) {
+  if (!sid) {
+    return;
+  }
+  const raw = window.prompt('Enter new session name:', sid);
+  if (raw === null) {
+    return;
+  }
+  const newSid = raw.trim();
+  if (!newSid || newSid === sid) {
+    return;
+  }
+  try {
+    const response = await apiFetch(`/session/${sid}/rename`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_session_id: newSid })
+    });
+    if (!response.ok) {
+      let message = 'Unable to rename session.';
+      try {
+        const data = await response.json();
+        if (data?.detail) {
+          message = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        }
+      } catch (err) {
+        // best-effort parse
+      }
+      throw new Error(message);
+    }
+    const payload = await response.json();
+    const updatedSid = payload?.new_session_id || newSid;
+    if (HISTORY_SELECTED === sid) {
+      HISTORY_SELECTED = updatedSid;
+    }
+    if (SID === sid) {
+      SID = updatedSid;
+      window.__SID__ = updatedSid;
+    }
+    await loadHistory();
+  } catch (err) {
+    alert(err?.message || 'Unable to rename session.');
+  }
+}
+
 async function loadHistory() {
   const list = $('#history-list');
   if (!list) {
@@ -1147,10 +1271,9 @@ async function loadHistory() {
     }
     list.innerHTML = '';
     sorted.forEach(session => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'run-history-item';
-      button.dataset.sid = session.session_id;
+      const row = document.createElement('div');
+      row.className = 'run-history-item';
+      row.dataset.sid = session.session_id;
       const meta = [];
       const time = formatTimestamp(session.updated_at || session.created_at);
       if (time !== 'unknown') {
@@ -1162,9 +1285,42 @@ async function loadHistory() {
       if (typeof session.artifacts === 'number') {
         meta.push(`${session.artifacts} artifact${session.artifacts === 1 ? '' : 's'}`);
       }
-      button.innerHTML = `<strong>${esc(session.session_id)}</strong><small>${esc(meta.join(' | '))}</small>`;
-      button.addEventListener('click', () => loadHistoryDetails(session.session_id));
-      list.appendChild(button);
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'run-history-open';
+      openBtn.innerHTML = `<strong>${esc(session.session_id)}</strong><small>${esc(meta.join(' | '))}</small>`;
+      openBtn.addEventListener('click', () => loadHistoryDetails(session.session_id));
+
+      const renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'run-history-rename';
+      renameBtn.title = `Rename ${session.session_id}`;
+      renameBtn.setAttribute('aria-label', `Rename ${session.session_id}`);
+      renameBtn.textContent = 'edit';
+      renameBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        renameHistorySession(session.session_id);
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'run-history-delete';
+      delBtn.title = `Delete ${session.session_id}`;
+      delBtn.setAttribute('aria-label', `Delete ${session.session_id}`);
+      delBtn.textContent = 'x';
+      delBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        deleteHistorySession(session.session_id);
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'run-history-actions';
+      actions.appendChild(renameBtn);
+      actions.appendChild(delBtn);
+
+      row.appendChild(openBtn);
+      row.appendChild(actions);
+      list.appendChild(row);
     });
     if (HISTORY_SELECTED) {
       setHistoryActive(HISTORY_SELECTED);
@@ -1217,13 +1373,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#upload-sc').addEventListener('click', uploadSCFiles);
   $('#validate').addEventListener('click', validateFlow);
   $('#runflow').addEventListener('click', runFlow);
+  $('#stopflow')?.addEventListener('click', requestStopCurrentFlow);
   $('#clearflow').addEventListener('click', startNewSessionFromClear);
+  $('#session-new')?.addEventListener('click', () => window.location.reload());
   $('#unit-search').addEventListener('input', applySearch);
   $('#expAll').addEventListener('click', expandAll);
   $('#colAll').addEventListener('click', collapseAll);
   $('#history-refresh')?.addEventListener('click', loadHistory);
 
   resetPipelineProgress();
+  setStopFlowEnabled(false);
   await ensureSession();
   await renderUnits();
   applySearch(); // initialize
