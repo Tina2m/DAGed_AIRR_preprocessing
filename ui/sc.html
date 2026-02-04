@@ -20,7 +20,10 @@
   <div class="wrap">
     <main class="left">
       <div class="panel">
-        <h1>Single‑Cell AIRR</h1>
+        <div class="title-row">
+          <h1>Single‑Cell AIRR</h1>
+          <button id="session-new" class="secondary" type="button">New</button>
+        </div>
         <p class="muted mb12">
           Upload AIRR TSV/TSV.GZ files, then add steps to the flow (right). Session is created automatically.
         </p>
@@ -77,7 +80,6 @@
           <button id="runflow">Run pipeline</button>
           <button id="stopflow" class="secondary" disabled>Stop</button>
           <button id="clearflow" class="secondary">Clear</button>
-          <button id="session-new" class="secondary">New</button>
         </div>
         <div class="mt8">
           <label class="muted">Schema (click order)</label>
@@ -130,6 +132,6 @@
     </aside>
   </div>
 
-  <script type="module" src="assets/js/sc.js?v=20260204"></script>
+  <script type="module" src="assets/js/sc.js?v=20260204b"></script>
 </body>
 </html>

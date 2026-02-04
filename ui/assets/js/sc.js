@@ -661,6 +661,16 @@ async function runSingle(card, unitId, label) {
     button.textContent = 'Running...';
   }
   const params = collectParams(card);
+  const normalizedFiles = resolveFilesParamFromArtifacts(params.files, LAST_STATE);
+  if (normalizedFiles) {
+    params.files = normalizedFiles;
+  }
+  if (!params.files || !String(params.files).trim()) {
+    const scTableFile = resolveCurrentScTableFile(LAST_STATE);
+    if (scTableFile) {
+      params.files = scTableFile;
+    }
+  }
   if (!params.files || !String(params.files).trim()) {
     const originInputs = getOriginScInputs(LAST_STATE);
     if (originInputs.length) {
@@ -868,10 +878,20 @@ async function runFlow() {
       }
       const step = FLOW[index];
       const params = { ...(step.params || {}) };
+      const normalizedFiles = resolveFilesParamFromArtifacts(params.files, LAST_STATE);
+      if (normalizedFiles) {
+        params.files = normalizedFiles;
+      }
       if (!params.files || !String(params.files).trim()) {
-        const scTable = LAST_STATE?.current?.SC_TABLE;
-        if (scTable) {
-          params.files = scTable;
+        const scTableFile = resolveCurrentScTableFile(LAST_STATE);
+        if (scTableFile) {
+          params.files = scTableFile;
+        }
+      }
+      if (!params.files || !String(params.files).trim()) {
+        const originInputs = getOriginScInputs(LAST_STATE);
+        if (originInputs.length) {
+          params.files = originInputs.join(', ');
         }
       }
       const runningMsg = `running step ${index + 1}/${totalSteps}: ${step.label}`;
@@ -1003,6 +1023,32 @@ function getOriginScInputs(state) {
       const lower = String(name || '').toLowerCase();
       return lower.endsWith('.tsv') || lower.endsWith('.tsv.gz');
     });
+}
+
+function resolveFilesParamFromArtifacts(filesValue, state) {
+  const raw = String(filesValue || '').trim();
+  if (!raw) {
+    return '';
+  }
+  const artifacts = state?.artifacts || {};
+  const names = raw.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+  if (!names.length) {
+    return '';
+  }
+  const resolved = names.map(name => {
+    const art = artifacts[name];
+    return art?.path || name;
+  });
+  return resolved.join(', ');
+}
+
+function resolveCurrentScTableFile(state) {
+  const key = state?.current?.SC_TABLE;
+  if (!key) {
+    return '';
+  }
+  const art = state?.artifacts?.[key];
+  return art?.path || key;
 }
 
 async function refreshState() {
