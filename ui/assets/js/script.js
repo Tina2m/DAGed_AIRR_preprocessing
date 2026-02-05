@@ -8,6 +8,8 @@ let QC_OBJECT_URLS = [];
 let STOP_REQUESTED = false;
 let PIPELINE_RUNNING = false;
 let LAST_RUN_WAS_CANCELLED = false;
+let PIPELINE_RUN_MODE = 'continue';
+let SUPPRESS_NEXT_PIPE_RUN = false;
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -1376,8 +1378,155 @@ function validatePipeline(){
   pipeMsg(okAll ? 'Validation passed' : 'Validation found issues', okAll ? 'ok' : 'warn');
 }
 
+function getPipelineRunMode() {
+  return PIPELINE_RUN_MODE;
+}
+
+function setPipelineRunMode(mode) {
+  PIPELINE_RUN_MODE = mode === 'restart' ? 'restart' : 'continue';
+  $$('#pipe-run-menu .run-item').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.runMode === PIPELINE_RUN_MODE);
+  });
+  pipeMsg(
+    PIPELINE_RUN_MODE === 'restart' ? 'Run mode: from beginning' : 'Run mode: continue from changes',
+    'muted'
+  );
+}
+
+function closePipelineRunMenu() {
+  const menu = $('#pipe-run-menu');
+  const toggle = $('#pipe-run-options');
+  const split = $('#pipe-run-split');
+  if (menu) {
+    menu.classList.remove('open');
+  }
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', 'false');
+  }
+  if (split) {
+    split.classList.remove('open');
+  }
+}
+
+function wirePipelineRunMenu() {
+  const split = $('#pipe-run-split');
+  const toggle = $('#pipe-run-options');
+  const menu = $('#pipe-run-menu');
+  if (!split || !toggle || !menu) {
+    return;
+  }
+
+  toggle.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextOpen = !menu.classList.contains('open');
+    if (nextOpen) {
+      menu.classList.add('open');
+      toggle.setAttribute('aria-expanded', 'true');
+      split.classList.add('open');
+    } else {
+      closePipelineRunMenu();
+    }
+  });
+
+  menu.querySelectorAll('.run-item').forEach(btn => {
+    btn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const selectedMode = btn.dataset.runMode || 'continue';
+      setPipelineRunMode(selectedMode);
+      closePipelineRunMenu();
+      if (PIPELINE_RUNNING) {
+        return;
+      }
+      SUPPRESS_NEXT_PIPE_RUN = true;
+      setTimeout(() => { SUPPRESS_NEXT_PIPE_RUN = false; }, 0);
+      const runBtn = $('#pipe-run');
+      if (!runBtn) {
+        return;
+      }
+      setButtonRunning(runBtn, true, 'Running...');
+      try {
+        await runPipeline(selectedMode);
+      } finally {
+        setButtonRunning(runBtn, false);
+      }
+    });
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!split.contains(event.target)) {
+      closePipelineRunMenu();
+    }
+  });
+
+  setPipelineRunMode(PIPELINE_RUN_MODE);
+}
+
+function stableParamString(value) {
+  if (Array.isArray(value)) {
+    return '[' + value.map(item => stableParamString(item)).join(',') + ']';
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return '{' + keys.map(key => `${JSON.stringify(key)}:${stableParamString(value[key])}`).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+function arePipelineStepsEquivalent(plannedStep, completedStep) {
+  const plannedUnit = (plannedStep && plannedStep.unit) || '';
+  const completedUnit = (completedStep && completedStep.unit) || '';
+  if (plannedUnit !== completedUnit) {
+    return false;
+  }
+  return stableParamString((plannedStep && plannedStep.params) || {}) ===
+    stableParamString((completedStep && completedStep.params) || {});
+}
+
+function getCompletedBulkSteps() {
+  const state = window.__SESSION_STATE__ || {};
+  const all = Array.isArray(state.steps) ? state.steps : [];
+  return all.filter(step => !((step && step.unit) || '').startsWith('sc_'));
+}
+
+function buildBulkRunPlan(bulkSteps, modeOverride) {
+  const mode = modeOverride === 'restart' || modeOverride === 'continue'
+    ? modeOverride
+    : getPipelineRunMode();
+  if (mode === 'restart') {
+    return { startIndex: 0, note: 'Run mode: from beginning.' };
+  }
+
+  const completed = getCompletedBulkSteps();
+  const sharedLength = Math.min(bulkSteps.length, completed.length);
+  let prefix = 0;
+  while (prefix < sharedLength && arePipelineStepsEquivalent(bulkSteps[prefix], completed[prefix])) {
+    prefix += 1;
+  }
+
+  if (prefix < completed.length && prefix < bulkSteps.length) {
+    return {
+      error: 'Continue from changes currently supports appending new steps only. Use "Run from beginning" for edited middle steps.'
+    };
+  }
+
+  if (prefix >= bulkSteps.length) {
+    return { startIndex: prefix, noWork: true, note: 'No new or changed bulk steps to run.' };
+  }
+
+  if (prefix > 0) {
+    const remaining = bulkSteps.length - prefix;
+    return {
+      startIndex: prefix,
+      note: `Reusing ${prefix} completed step${prefix === 1 ? '' : 's'}; running ${remaining}.`
+    };
+  }
+  return { startIndex: 0 };
+}
+
 /* ===== Run Pipeline ===== */
-async function runLinearPipeline(){
+async function runLinearPipeline(modeOverride){
   const steps = selectedSteps();
   const bulkSteps = steps.filter(st => !(st.unit || '').startsWith('sc_'));
   if(bulkSteps.length === 0){ pipeMsg('No bulk steps selected','warn'); return; }
@@ -1388,10 +1537,25 @@ async function runLinearPipeline(){
   if(bulkSteps.length !== steps.length){
     pipeMsg('Single-cell units removed from pipeline','warn');
   }
+  const runPlan = buildBulkRunPlan(bulkSteps, modeOverride);
+  if (runPlan.error) {
+    setRunStatus('Cannot continue from changed middle steps');
+    pipeMsg(runPlan.error, 'warn');
+    return;
+  }
+  if (runPlan.note) {
+    pipeMsg(runPlan.note, runPlan.noWork ? 'ok' : 'muted');
+  }
+  if (runPlan.noWork) {
+    setRunStatus('Up to date');
+    setProgress(bulkSteps.length, bulkSteps.length || 1);
+    return;
+  }
   validatePipeline(); // show current validation info
-  setRunStatus('Starting…'); setProgress(0, bulkSteps.length);
+  setRunStatus(runPlan.startIndex > 0 ? `Continuing from step ${runPlan.startIndex + 1}...` : 'Starting...');
+  setProgress(runPlan.startIndex, bulkSteps.length || 1);
 
-  for(let i=0;i<bulkSteps.length;i++){
+  for(let i=runPlan.startIndex;i<bulkSteps.length;i++){
     if (STOP_REQUESTED) {
       setRunStatus(`Stopped (${i}/${bulkSteps.length})`);
       pipeMsg('Pipeline stopped','warn');
@@ -1416,9 +1580,9 @@ async function runLinearPipeline(){
 }
 
 
-async function runPipeline(){
+async function runPipeline(modeOverride){
   try {
-    await runLinearPipeline();
+    await runLinearPipeline(modeOverride);
     await loadHistory();
   } finally {
     PIPELINE_RUNNING = false;
@@ -1438,7 +1602,12 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#session-new')?.addEventListener('click', startFreshSessionLikeRefresh);
   $('#history-refresh')?.addEventListener('click', loadHistory);
   $('#pipe-validate')?.addEventListener('click', validatePipeline);
+  wirePipelineRunMenu();
   $('#pipe-run')?.addEventListener('click', async (event) => {
+    if (SUPPRESS_NEXT_PIPE_RUN) {
+      SUPPRESS_NEXT_PIPE_RUN = false;
+      return;
+    }
     const button = event.currentTarget;
     setButtonRunning(button, true, 'Running...');
     try {

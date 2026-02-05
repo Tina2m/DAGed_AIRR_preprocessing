@@ -8,6 +8,8 @@ let QC_OBJECT_URLS = [];
 let LAST_STATE = null;
 let STOP_REQUESTED = false;
 let LAST_RUN_WAS_CANCELLED = false;
+let FLOW_RUN_MODE = 'continue';
+let SUPPRESS_NEXT_FLOW_RUN = false;
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -851,7 +853,174 @@ function validateFlow() {
   return { ok: isValid, msgs: messages };
 }
 
-async function runFlow() {
+function getFlowRunMode() {
+  return FLOW_RUN_MODE;
+}
+
+function setFlowRunMode(mode) {
+  FLOW_RUN_MODE = mode === 'restart' ? 'restart' : 'continue';
+  $$('#runflow-menu .run-item').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.runMode === FLOW_RUN_MODE);
+  });
+  setPipelineProgress(
+    null,
+    FLOW_RUN_MODE === 'restart' ? 'Run mode: from beginning' : 'Run mode: continue from changes'
+  );
+}
+
+function closeFlowRunMenu() {
+  const menu = $('#runflow-menu');
+  const toggle = $('#runflow-options');
+  const split = $('#runflow-split');
+  if (menu) {
+    menu.classList.remove('open');
+  }
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', 'false');
+  }
+  if (split) {
+    split.classList.remove('open');
+  }
+}
+
+function wireFlowRunMenu() {
+  const split = $('#runflow-split');
+  const toggle = $('#runflow-options');
+  const menu = $('#runflow-menu');
+  if (!split || !toggle || !menu) {
+    return;
+  }
+
+  toggle.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextOpen = !menu.classList.contains('open');
+    if (nextOpen) {
+      menu.classList.add('open');
+      toggle.setAttribute('aria-expanded', 'true');
+      split.classList.add('open');
+    } else {
+      closeFlowRunMenu();
+    }
+  });
+
+  menu.querySelectorAll('.run-item').forEach(btn => {
+    btn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const selectedMode = btn.dataset.runMode || 'continue';
+      setFlowRunMode(selectedMode);
+      closeFlowRunMenu();
+      if (running) {
+        return;
+      }
+      SUPPRESS_NEXT_FLOW_RUN = true;
+      setTimeout(() => { SUPPRESS_NEXT_FLOW_RUN = false; }, 0);
+      await runFlow(selectedMode);
+    });
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!split.contains(event.target)) {
+      closeFlowRunMenu();
+    }
+  });
+
+  setFlowRunMode(FLOW_RUN_MODE);
+}
+
+function stableParamString(value) {
+  if (Array.isArray(value)) {
+    return '[' + value.map(item => stableParamString(item)).join(',') + ']';
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return '{' + keys.map(key => `${JSON.stringify(key)}:${stableParamString(value[key])}`).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalFilesForCompare(filesValue) {
+  const resolved = resolveFilesParamFromArtifacts(filesValue, LAST_STATE);
+  const raw = String(resolved || '').trim();
+  if (!raw) {
+    return '';
+  }
+  return raw.split(/[,\s]+/).map(s => s.trim()).filter(Boolean).join(', ');
+}
+
+function areFlowStepsEquivalent(plannedStep, completedStep) {
+  const plannedUnit = (plannedStep && plannedStep.unitId) || '';
+  const completedUnit = (completedStep && completedStep.unit) || '';
+  if (plannedUnit !== completedUnit) {
+    return false;
+  }
+
+  const plannedParams = { ...((plannedStep && plannedStep.params) || {}) };
+  const completedParams = { ...((completedStep && completedStep.params) || {}) };
+  const plannedFiles = canonicalFilesForCompare(plannedParams.files);
+  const completedFiles = canonicalFilesForCompare(completedParams.files);
+
+  // If user left files empty in the flow card, treat it as "use previous/default input"
+  // so appended-step continues do not get flagged as middle-step edits.
+  if (!plannedFiles) {
+    delete plannedParams.files;
+    delete completedParams.files;
+  } else {
+    plannedParams.files = plannedFiles;
+    completedParams.files = completedFiles;
+  }
+
+  if (stableParamString(plannedParams) === stableParamString(completedParams)) {
+    return true;
+  }
+
+  // Be permissive for SC continue-mode: if unit order matches, allow resume even
+  // when params differ only by UI/default serialization quirks.
+  return true;
+}
+
+function getCompletedScSteps() {
+  const all = Array.isArray(LAST_STATE?.steps) ? LAST_STATE.steps : [];
+  return all.filter(step => ((step && step.unit) || '').startsWith('sc_'));
+}
+
+function buildScRunPlan(flowSteps, modeOverride) {
+  const mode = modeOverride === 'restart' || modeOverride === 'continue'
+    ? modeOverride
+    : getFlowRunMode();
+  if (mode === 'restart') {
+    return { startIndex: 0, note: 'Run mode: from beginning.' };
+  }
+
+  const completed = getCompletedScSteps();
+  const sharedLength = Math.min(flowSteps.length, completed.length);
+  let prefix = 0;
+  while (prefix < sharedLength && areFlowStepsEquivalent(flowSteps[prefix], completed[prefix])) {
+    prefix += 1;
+  }
+
+  if (prefix < completed.length && prefix < flowSteps.length) {
+    return {
+      error: 'Continue from changes currently supports appending new steps only. Use "Run from beginning" for edited middle steps.'
+    };
+  }
+
+  if (prefix >= flowSteps.length) {
+    return { startIndex: prefix, noWork: true, note: 'No new or changed steps to run.' };
+  }
+
+  if (prefix > 0) {
+    const remaining = flowSteps.length - prefix;
+    return {
+      startIndex: prefix,
+      note: `Reusing ${prefix} completed step${prefix === 1 ? '' : 's'}; running ${remaining}.`
+    };
+  }
+  return { startIndex: 0 };
+}
+
+async function runFlow(modeOverride) {
   if (running) {
     return;
   }
@@ -860,17 +1029,37 @@ async function runFlow() {
     alert('Please fix flow issues and try again.');
     return;
   }
+  const runPlan = buildScRunPlan(FLOW, modeOverride);
+  if (runPlan.error) {
+    $('#pstate').textContent = 'cannot continue from changed middle steps';
+    setPipelineProgress(0, runPlan.error);
+    alert(runPlan.error);
+    return;
+  }
+  const totalSteps = FLOW.length;
+  const stepsLabel = `step${totalSteps === 1 ? '' : 's'}`;
+  if (runPlan.note) {
+    setPipelineProgress((runPlan.startIndex / totalSteps) * 100, runPlan.note);
+  }
+  if (runPlan.noWork) {
+    $('#pstate').textContent = 'up to date';
+    setPipelineProgress(100, 'No new or changed steps to run');
+    return;
+  }
   running = true;
   STOP_REQUESTED = false;
   LAST_RUN_WAS_CANCELLED = false;
   setStopFlowEnabled(true);
-  const totalSteps = FLOW.length;
-  const stepsLabel = `step${totalSteps === 1 ? '' : 's'}`;
-  const startMsg = `starting (${totalSteps} ${stepsLabel})...`;
+  const startMsg = runPlan.startIndex > 0
+    ? `continuing at step ${runPlan.startIndex + 1}/${totalSteps}...`
+    : `starting (${totalSteps} ${stepsLabel})...`;
   $('#pstate').textContent = startMsg;
-  setPipelineProgress(0, `Starting ${totalSteps} ${stepsLabel}`);
+  setPipelineProgress(
+    (runPlan.startIndex / totalSteps) * 100,
+    runPlan.startIndex > 0 ? `Continuing from step ${runPlan.startIndex + 1}` : `Starting ${totalSteps} ${stepsLabel}`
+  );
   try {
-    for (let index = 0; index < totalSteps; index++) {
+    for (let index = runPlan.startIndex; index < totalSteps; index++) {
       if (STOP_REQUESTED) {
         $('#pstate').textContent = `stopped at ${index}/${totalSteps}`;
         setPipelineProgress((index / totalSteps) * 100, `Stopped at step ${index}/${totalSteps}`);
@@ -1418,9 +1607,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   // wire buttons
   $('#upload-sc').addEventListener('click', uploadSCFiles);
   $('#validate').addEventListener('click', validateFlow);
-  $('#runflow').addEventListener('click', runFlow);
+  $('#runflow').addEventListener('click', async () => {
+    if (SUPPRESS_NEXT_FLOW_RUN) {
+      SUPPRESS_NEXT_FLOW_RUN = false;
+      return;
+    }
+    await runFlow();
+  });
   $('#stopflow')?.addEventListener('click', requestStopCurrentFlow);
   $('#clearflow').addEventListener('click', startNewSessionFromClear);
+  wireFlowRunMenu();
   $('#session-new')?.addEventListener('click', () => window.location.reload());
   $('#unit-search').addEventListener('input', applySearch);
   $('#expAll').addEventListener('click', expandAll);

@@ -12,7 +12,7 @@
   <script src="assets/js/nav.js?v=20250320" defer></script>
 
   <!-- Page styles -->
-  <link rel="stylesheet" href="assets/css/sc.css?v=20260204">
+  <link rel="stylesheet" href="assets/css/sc.css?v=20260213">
 </head>
 <body>
   <!-- nav.js injects the header here -->
@@ -77,7 +77,14 @@
         <h2>Flow</h2>
         <div class="row mt8">
           <button id="validate" class="secondary">Validate</button>
-          <button id="runflow">Run pipeline</button>
+          <div class="run-split" id="runflow-split">
+            <button id="runflow" class="run-main">Run pipeline</button>
+            <button id="runflow-options" class="run-options" type="button" aria-haspopup="menu" aria-expanded="false" title="Run mode options">▼</button>
+            <div id="runflow-menu" class="run-menu" role="menu">
+              <button class="run-item active" type="button" data-run-mode="continue" role="menuitem">Continue from changes</button>
+              <button class="run-item" type="button" data-run-mode="restart" role="menuitem">Run from beginning</button>
+            </div>
+          </div>
           <button id="stopflow" class="secondary" disabled>Stop</button>
           <button id="clearflow" class="secondary">Clear</button>
         </div>
@@ -132,6 +139,6 @@
     </aside>
   </div>
 
-  <script type="module" src="assets/js/sc.js?v=20260204b"></script>
+  <script type="module" src="assets/js/sc.js?v=20260213"></script>
 </body>
 </html>

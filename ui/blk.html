@@ -41,6 +41,42 @@
     h2{margin:14px 0 10px 0;font-size:18px}
     h3{margin:6px 0 8px 0;font-size:16px}
     .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .run-split{position:relative;display:inline-flex;align-items:stretch}
+    .run-split .run-main{border-radius:10px 0 0 10px}
+    .run-split .run-options{
+      border-radius:0 10px 10px 0;
+      min-width:40px;
+      padding:10px 10px;
+      border-left:1px solid rgba(255,255,255,.3);
+    }
+    .run-menu{
+      position:absolute;
+      top:calc(100% + 6px);
+      left:0;
+      min-width:230px;
+      background:#fff;
+      border:1px solid var(--border);
+      border-radius:10px;
+      box-shadow:var(--shadow);
+      overflow:hidden;
+      display:none;
+      z-index:30;
+    }
+    .run-menu.open{display:block}
+    .run-menu .run-item{
+      width:100%;
+      border:none;
+      border-bottom:1px solid var(--border);
+      border-radius:0;
+      background:#fff;
+      color:var(--text);
+      text-align:left;
+      padding:10px 12px;
+      cursor:pointer;
+    }
+    .run-menu .run-item:last-child{border-bottom:none}
+    .run-menu .run-item:hover{background:#eef2ff}
+    .run-menu .run-item.active{background:#2563eb;color:#fff}
     .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:16px}
     .upload-grid{grid-template-columns:minmax(0,1fr)}
     .card{background:var(--card);padding:14px;border-radius:12px;border:1px solid var(--border);box-shadow:var(--shadow)}
@@ -252,7 +288,14 @@
         <h2>Flow</h2>
         <div class="row mt8">
           <button id="pipe-validate" class="secondary">Validate</button>
-          <button id="pipe-run">Run pipeline</button>
+          <div class="run-split" id="pipe-run-split">
+            <button id="pipe-run" class="run-main">Run pipeline</button>
+            <button id="pipe-run-options" class="run-options" type="button" aria-haspopup="menu" aria-expanded="false" title="Run mode options">▼</button>
+            <div id="pipe-run-menu" class="run-menu" role="menu">
+              <button class="run-item active" type="button" data-run-mode="continue" role="menuitem">Continue from changes</button>
+              <button class="run-item" type="button" data-run-mode="restart" role="menuitem">Run from beginning</button>
+            </div>
+          </div>
           <button id="pipe-stop" class="secondary" disabled>Stop</button>
           <button id="pipe-clear" class="secondary">Clear</button>
           <span id="pipe-msg" class="muted"></span>
@@ -301,6 +344,6 @@
     </aside>
   </div>
 
-  <script defer src="assets/js/script.js?v=20260204"></script>
+  <script defer src="assets/js/script.js?v=20260213"></script>
 </body>
 </html>
