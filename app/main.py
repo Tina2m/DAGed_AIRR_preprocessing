@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Literal, Any
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Depends
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -35,6 +35,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 # (Keep your UI files under app/ui)
 app.mount("/ui", StaticFiles(directory="ui", html=True), name="ui")
+
+
+@app.get("/", include_in_schema=False)
+def _root_redirect():
+    """Redirect root to the web UI so https://your-domain/ works."""
+    return RedirectResponse(url="/ui/", status_code=302)
 
 BASE = pathlib.Path("/data")
 BASE.mkdir(parents=True, exist_ok=True)
