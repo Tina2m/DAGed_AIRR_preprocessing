@@ -107,11 +107,13 @@
           </div>
         </div>
         <div class="mt8">
-          <h3>Read statistics</h3>
-          <div class="muted funnel-note">Percent of reads passing each filtering step.</div>
-          <div id="filter-funnel" class="filter-funnel">
-            <div class="muted">No filtering steps run yet.</div>
-          </div>
+          <details class="stats-toggle">
+            <summary><span class="stats-summary-title">Read statistics</span></summary>
+            <div class="muted funnel-note">Percent of reads passing each filtering step.</div>
+            <div id="filter-funnel" class="filter-funnel">
+              <div class="muted">No filtering steps run yet.</div>
+            </div>
+          </details>
           <div class="mt8">
             <details class="qc-toggle">
               <summary><span class="qc-summary-title">QC plots</span></summary>

@@ -649,7 +649,7 @@ def _write_grouped_bar_svg(
     dest.write_text("\n".join(lines))
 
 def _plot_artifact_name(step_idx: int, unit_id: str, channel: str, stage: str) -> str:
-    return f"plot_{step_idx:03d}_{unit_id}_{channel}_{stage}"
+    return f"plot_{_step_label_index(step_idx):03d}_{unit_id}_{channel}_{stage}"
 
 def _hist_uniform(values: List[float], bins: List[int]) -> List[int]:
     if not bins or len(bins) < 2:
@@ -1066,7 +1066,7 @@ def _generate_sc_productive_plots(
         total = sum(counts.values())
         if total == 0:
             return artifacts
-        name = f"plot_{step_idx:03d}_{unit_id}_ratio"
+        name = f"plot_{_step_label_index(step_idx):03d}_{unit_id}_ratio"
         rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
         _write_stacked_bar_svg(
             sdir / rel,
@@ -1116,7 +1116,7 @@ def _generate_sc_multi_heavy_plots(
             c2 += sum(1 for v in counts.values() if v > 1)
         if total == 0:
             return artifacts
-        name = f"plot_{step_idx:03d}_{unit_id}_ratio"
+        name = f"plot_{_step_label_index(step_idx):03d}_{unit_id}_ratio"
         rel = pathlib.Path(QC_PLOT_DIRNAME) / f"{name}.svg"
         _write_stacked_bar_svg(
             sdir / rel,
@@ -1378,8 +1378,11 @@ class UnitSpec(BaseModel):
 
 def _next_idx(sess: SessionState) -> int: return len(sess.steps)
 
+def _step_label_index(idx: int) -> int:
+    return idx + 1
+
 def _with_step(name: str, idx: int) -> str:
-    return f"{name}_s{idx:03d}"
+    return f"{name}_s{_step_label_index(idx):03d}"
 
 def _reset_session_state(sess: SessionState, sdir: pathlib.Path, delete_files: bool = True) -> Dict[str, Any]:
     keep_artifacts = {name: art for name, art in sess.artifacts.items() if art.from_step == -1}

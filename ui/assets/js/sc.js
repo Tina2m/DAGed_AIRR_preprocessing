@@ -638,12 +638,18 @@ function renderQcPlots(state) {
   const groups = new Map();
   artifacts.forEach(art => {
     const info = parseScPlotInfo(art);
-    if (!info || info.stepIndex === null) {
+    if (!info) {
       return;
     }
-    const key = `${info.stepIndex}:${info.unitId}`;
+    const stepIndex = (typeof art.from_step === 'number' && art.from_step >= 0)
+      ? art.from_step
+      : info.stepIndex;
+    if (stepIndex === null || !Number.isFinite(stepIndex)) {
+      return;
+    }
+    const key = `${stepIndex}:${info.unitId}`;
     if (!groups.has(key)) {
-      groups.set(key, { stepIndex: info.stepIndex, unitId: info.unitId, plots: [] });
+      groups.set(key, { stepIndex, unitId: info.unitId, plots: [] });
     }
     groups.get(key).plots.push({ art, stage: info.stage });
   });

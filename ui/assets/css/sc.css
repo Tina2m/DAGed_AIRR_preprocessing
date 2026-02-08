@@ -591,6 +591,43 @@ button.btn-small{padding:6px 10px;font-size:12px}
   text-align:center;
 }
 
+/* --- stats toggle --- */
+.stats-toggle{
+  border:1px dashed var(--border);
+  border-radius:10px;
+  padding:8px 10px;
+  background:#fff;
+}
+.stats-toggle summary{
+  cursor:pointer;
+  color:var(--text);
+  list-style:none;
+  user-select:none;
+  display:flex;
+  align-items:center;
+}
+.stats-toggle summary::-webkit-details-marker{display:none}
+.stats-toggle summary::after{
+  content:"\25B8";
+  margin-left:auto;
+  color:var(--muted);
+  font-size:12px;
+}
+.stats-toggle[open] summary{
+  margin-bottom:6px;
+}
+.stats-toggle[open] summary::after{
+  content:"\25BE";
+}
+.stats-toggle .funnel-note{
+  margin-top:6px;
+}
+.stats-summary-title{
+  font-size:16px;
+  font-weight:600;
+  margin:0;
+}
+
 /* --- qc toggle --- */
 .qc-toggle{
   border:1px dashed var(--border);
