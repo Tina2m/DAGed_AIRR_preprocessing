@@ -8,9 +8,9 @@ This repo hosts the ImmunoStream / AIRR preprocessing web app. The backend is a 
 - UI: ui/ (static HTML/CSS/JS served at /ui).
 
 ## Data storage
-- File-based JSON under /data (bind-mounted in Docker).
-- Auth: /data/_auth/users.json and /data/_auth/tokens.json.
-- Sessions: /data/users/<user_id>/sessions/<session_id>/state.json plus artifacts and logs.
+- **PostgreSQL**: users, auth_tokens, sessions (with state_json JSONB). Set `DATABASE_URL` (e.g. in Docker Compose).
+- **Session files** (uploads, logs, pipeline outputs): directory per session under `SESSION_FILES_DIR` (default `/data/session_files/<session_id>`). Bind-mounted in Docker as volume `session_files`.
+- Tables: `users` (id, username, password_salt, password_hash, created_at), `auth_tokens` (token, user_id, created_at), `sessions` (id, user_id, display_name, created_at, updated_at, state_json).
 
 ## External tools
 - pRESTO tools must be available on PATH: FilterSeq.py, MaskPrimers.py, CollapseSeq.py, BuildConsensus.py.

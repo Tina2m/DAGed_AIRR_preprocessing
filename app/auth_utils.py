@@ -1,42 +1,28 @@
-"""Authentication and user storage utilities."""
+"""Authentication and user storage utilities (database-backed)."""
 from __future__ import annotations
 
 import hashlib
 import hmac
-import json
-import pathlib
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
+
+from sqlalchemy.orm import Session
+
+from app.repositories import (
+    token_create,
+    token_get,
+    user_create,
+    user_get_by_id,
+    user_get_by_username,
+)
 
 PBKDF2_ROUNDS = 200_000
-AUTH_DIRNAME = "_auth"
-USERS_FILENAME = "users.json"
-TOKENS_FILENAME = "tokens.json"
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _auth_paths(base_dir: pathlib.Path) -> Tuple[pathlib.Path, pathlib.Path]:
-    auth_dir = base_dir / AUTH_DIRNAME
-    auth_dir.mkdir(parents=True, exist_ok=True)
-    return auth_dir / USERS_FILENAME, auth_dir / TOKENS_FILENAME
-
-
-def _load_json(path: pathlib.Path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return default
-
-
-def _save_json(path: pathlib.Path, data) -> None:
-    path.write_text(json.dumps(data, indent=2))
 
 
 def _normalize_username(username: str) -> str:
@@ -45,102 +31,62 @@ def _normalize_username(username: str) -> str:
 
 def _hash_password(password: str, salt_hex: str) -> str:
     salt = bytes.fromhex(salt_hex)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ROUNDS)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, PBKDF2_ROUNDS
+    )
     return digest.hex()
 
 
-def _load_users(base_dir: pathlib.Path) -> Dict[str, Dict[str, str]]:
-    users_path, _ = _auth_paths(base_dir)
-    data = _load_json(users_path, {"users": {}})
-    return data.get("users", {})
+def _user_record(user_id: uuid.UUID, username: str) -> Dict[str, str]:
+    return {
+        "user_id": str(user_id),
+        "username": username,
+    }
 
 
-def _save_users(base_dir: pathlib.Path, users: Dict[str, Dict[str, str]]) -> None:
-    users_path, _ = _auth_paths(base_dir)
-    _save_json(users_path, {"users": users})
-
-
-def _load_tokens(base_dir: pathlib.Path) -> Dict[str, Dict[str, str]]:
-    _, tokens_path = _auth_paths(base_dir)
-    data = _load_json(tokens_path, {"tokens": {}})
-    return data.get("tokens", {})
-
-
-def _save_tokens(base_dir: pathlib.Path, tokens: Dict[str, Dict[str, str]]) -> None:
-    _, tokens_path = _auth_paths(base_dir)
-    _save_json(tokens_path, {"tokens": tokens})
-
-
-def create_user(base_dir: pathlib.Path, username: str, password: str) -> Dict[str, str]:
+def create_user(db: Session, username: str, password: str) -> Dict[str, str]:
     username_norm = _normalize_username(username)
     if not username_norm:
         raise ValueError("Username is required.")
     if len(password or "") < 6:
         raise ValueError("Password must be at least 6 characters.")
 
-    users = _load_users(base_dir)
-    if username_norm in users:
+    if user_get_by_username(db, username_norm) is not None:
         raise ValueError("Username already exists.")
 
     salt = secrets.token_bytes(16).hex()
     password_hash = _hash_password(password, salt)
-    user_id = str(uuid.uuid4())
-    record = {
-        "user_id": user_id,
-        "username": username_norm,
-        "password_salt": salt,
-        "password_hash": password_hash,
-        "created_at": _now_iso(),
-    }
-    users[username_norm] = record
-    _save_users(base_dir, users)
-    return record
+    user = user_create(db, username_norm, salt, password_hash)
+    return _user_record(user.id, user.username)
 
 
-def authenticate_user(base_dir: pathlib.Path, username: str, password: str) -> Optional[Dict[str, str]]:
+def authenticate_user(
+    db: Session, username: str, password: str
+) -> Optional[Dict[str, str]]:
     username_norm = _normalize_username(username)
-    users = _load_users(base_dir)
-    record = users.get(username_norm)
-    if not record:
+    user = user_get_by_username(db, username_norm)
+    if not user:
         return None
-    expected = record.get("password_hash", "")
-    salt = record.get("password_salt", "")
-    if not salt or not expected:
+    candidate = _hash_password(password, user.password_salt)
+    if not hmac.compare_digest(candidate, user.password_hash):
         return None
-    candidate = _hash_password(password, salt)
-    if not hmac.compare_digest(candidate, expected):
-        return None
-    return record
+    return _user_record(user.id, user.username)
 
 
-def _find_user_by_id(users: Dict[str, Dict[str, str]], user_id: str) -> Optional[Dict[str, str]]:
-    for record in users.values():
-        if record.get("user_id") == user_id:
-            return record
-    return None
-
-
-def create_token(base_dir: pathlib.Path, user_id: str, username: str) -> str:
-    tokens = _load_tokens(base_dir)
+def create_token(db: Session, user_id: str, username: str) -> str:
     token = secrets.token_urlsafe(32)
-    tokens[token] = {
-        "user_id": user_id,
-        "username": username,
-        "created_at": _now_iso(),
-    }
-    _save_tokens(base_dir, tokens)
+    uid = uuid.UUID(user_id) if isinstance(user_id, str) else user_id
+    token_create(db, uid, token)
     return token
 
 
-def get_user_by_token(base_dir: pathlib.Path, token: str) -> Optional[Dict[str, str]]:
+def get_user_by_token(db: Session, token: str) -> Optional[Dict[str, str]]:
     if not token:
         return None
-    tokens = _load_tokens(base_dir)
-    entry = tokens.get(token)
+    entry = token_get(db, token)
     if not entry:
         return None
-    users = _load_users(base_dir)
-    record = _find_user_by_id(users, entry.get("user_id", ""))
-    if not record:
+    user = user_get_by_id(db, entry.user_id)
+    if not user:
         return None
-    return record
+    return _user_record(user.id, user.username)

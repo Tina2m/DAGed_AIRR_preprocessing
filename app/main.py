@@ -19,8 +19,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-import auth_utils
+from app import auth_utils
+from app.config import SESSION_FILES_BASE
+from app.database import get_db_dependency, init_db
+from app.repositories import (
+    session_create,
+    session_delete,
+    session_get_for_user,
+    session_list_by_user,
+    session_update_display_name,
+    session_update_state,
+)
 
 # --------- sanity: ensure pRESTO tools exist on PATH ----------
 import shutil as _shutil
@@ -33,6 +44,21 @@ if _missing:
 app = FastAPI(title="pRESTO Click-to-Run Backend")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
+@app.on_event("startup")
+def on_startup() -> None:
+    """Ensure database is reachable and tables exist."""
+    import time
+    for attempt in range(10):
+        try:
+            init_db()
+            return
+        except Exception as e:
+            if attempt == 9:
+                raise
+            time.sleep(2)
+
+
 # (Keep your UI files under app/ui)
 app.mount("/ui", StaticFiles(directory="ui", html=True), name="ui")
 
@@ -41,9 +67,6 @@ app.mount("/ui", StaticFiles(directory="ui", html=True), name="ui")
 def _root_redirect():
     """Redirect root to the web UI so https://your-domain/ works."""
     return RedirectResponse(url="/ui/", status_code=302)
-
-BASE = pathlib.Path("/data")
-BASE.mkdir(parents=True, exist_ok=True)
 
 auth_scheme = HTTPBearer(auto_error=False)
 RUNNING_PROCS: Dict[str, subprocess.Popen] = {}
@@ -56,32 +79,35 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _user_sessions_root(user_id: str) -> pathlib.Path:
-    return BASE / "users" / user_id / "sessions"
-
-
-def _session_dir_for_user(user_id: str, session_id: str) -> pathlib.Path:
-    return _user_sessions_root(user_id) / session_id
+def _session_dir(session_id: str) -> pathlib.Path:
+    """Path to session working directory (uploads, logs, pipeline outputs)."""
+    return SESSION_FILES_BASE / str(session_id)
 
 
 def _require_user(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(auth_scheme),
+    db: Session = Depends(get_db_dependency),
 ) -> Dict[str, str]:
     if not creds or not creds.credentials:
         raise HTTPException(status_code=401, detail="Missing auth token.")
-    record = auth_utils.get_user_by_token(BASE, creds.credentials)
+    record = auth_utils.get_user_by_token(db, creds.credentials)
     if not record:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
     return record
 
 
-def _load_session_for_user(user: Dict[str, str], session_id: str) -> tuple[pathlib.Path, "SessionState"]:
-    session_dir = _session_dir_for_user(user["user_id"], session_id)
-    if not session_dir.exists():
+def _load_session_for_user(
+    user: Dict[str, str], session_id: str, db: Session
+) -> tuple[pathlib.Path, "SessionState"]:
+    try:
+        sid = uuid.UUID(session_id)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Session not found.")
-    state = load_state(session_dir)
-    if state.owner_user_id and state.owner_user_id != user["user_id"]:
-        raise HTTPException(status_code=403, detail="Access denied for this session.")
+    row = session_get_for_user(db, sid, uuid.UUID(user["user_id"]))
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    session_dir = _session_dir(session_id)
+    state = SessionState.model_validate(row.state_json)
     return session_dir, state
 
 
@@ -196,19 +222,12 @@ def _require_fastq(sess: SessionState, sdir: pathlib.Path, channel_key: str, for
     return p
 
 
-def load_state(sess_dir: pathlib.Path) -> SessionState:
-    p = sess_dir / "state.json"
-    if p.exists():
-        return SessionState.model_validate_json(p.read_text())
-    s = SessionState(session_id=sess_dir.name, created_at=_now_iso(), updated_at=_now_iso())
-    p.write_text(s.model_dump_json(indent=2))
-    return s
-
-def save_state(sess_dir: pathlib.Path, s: SessionState):
-    if not s.created_at:
-        s.created_at = _now_iso()
-    s.updated_at = _now_iso()
-    (sess_dir / "state.json").write_text(s.model_dump_json(indent=2))
+def save_state_db(db: Session, state: SessionState) -> None:
+    """Persist session state to database."""
+    if not state.created_at:
+        state.created_at = _now_iso()
+    state.updated_at = _now_iso()
+    session_update_state(db, uuid.UUID(state.session_id), state.model_dump())
 
 # --------- run_cmd: add --nproc when supported, retry w/o ----------
 def run_cmd(cmd: List[str], cwd: pathlib.Path, log_file: pathlib.Path):
@@ -1639,7 +1658,7 @@ class U_MaskPrimersScore(UnitSpec):
 
         primer_name = (params.get("primer_fname") or "").strip()
         if not primer_name:
-            aux = load_state(sdir).aux
+            aux = sess.aux
             if aux.get("v_primers") and not aux.get("c_primers"):
                 primer_name = aux["v_primers"]
             elif aux.get("c_primers") and not aux.get("v_primers"):
@@ -1728,7 +1747,7 @@ class U_MaskPrimersAlign(UnitSpec):
 
         primer_name = (params.get("primer_fname") or "").strip()
         if not primer_name:
-            aux = load_state(sdir).aux
+            aux = sess.aux
             if aux.get("v_primers") and not aux.get("c_primers"):
                 primer_name = aux["v_primers"]
             elif aux.get("c_primers") and not aux.get("v_primers"):
@@ -3001,21 +3020,21 @@ class AuthBody(BaseModel):
 
 
 @app.post("/auth/register")
-def register(body: AuthBody = Body(...)):
+def register(body: AuthBody = Body(...), db: Session = Depends(get_db_dependency)):
     try:
-        record = auth_utils.create_user(BASE, body.username, body.password)
+        record = auth_utils.create_user(db, body.username, body.password)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    token = auth_utils.create_token(BASE, record["user_id"], record["username"])
+    token = auth_utils.create_token(db, record["user_id"], record["username"])
     return {"user_id": record["user_id"], "username": record["username"], "token": token}
 
 
 @app.post("/auth/login")
-def login(body: AuthBody = Body(...)):
-    record = auth_utils.authenticate_user(BASE, body.username, body.password)
+def login(body: AuthBody = Body(...), db: Session = Depends(get_db_dependency)):
+    record = auth_utils.authenticate_user(db, body.username, body.password)
     if not record:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
-    token = auth_utils.create_token(BASE, record["user_id"], record["username"])
+    token = auth_utils.create_token(db, record["user_id"], record["username"])
     return {"user_id": record["user_id"], "username": record["username"], "token": token}
 
 
@@ -3024,45 +3043,40 @@ def get_me(user: Dict[str, str] = Depends(_require_user)):
     return {"user_id": user["user_id"], "username": user["username"]}
 
 
+def _infer_group(state: SessionState) -> str:
+    if any((step.unit or "").startswith("sc_") for step in state.steps):
+        return "sc"
+    if state.steps:
+        return "bulk"
+    if any(name.lower().endswith((".tsv", ".tsv.gz")) for name in (state.aux_files or [])):
+        return "sc"
+    if any((art.path or "").lower().endswith((".tsv", ".tsv.gz")) for art in state.artifacts.values()):
+        return "sc"
+    if "SC_TABLE" in (state.current or {}):
+        return "sc"
+    if any(ch in (state.current or {}) for ch in ("R1", "R2")):
+        return "bulk"
+    if any(art.kind in ("fastq", "fasta") for art in state.artifacts.values()):
+        return "bulk"
+    return "unknown"
+
+
 @app.get("/sessions")
-def list_sessions(user: Dict[str, str] = Depends(_require_user)):
-    sessions_dir = _user_sessions_root(user["user_id"])
-    if not sessions_dir.exists():
-        return []
+def list_sessions(user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):
+    rows = session_list_by_user(db, uuid.UUID(user["user_id"]))
     results = []
-    def infer_group(state: SessionState) -> str:
-        if any((step.unit or "").startswith("sc_") for step in state.steps):
-            return "sc"
-        if state.steps:
-            return "bulk"
-        if any(name.lower().endswith((".tsv", ".tsv.gz")) for name in (state.aux_files or [])):
-            return "sc"
-        if any((art.path or "").lower().endswith((".tsv", ".tsv.gz")) for art in state.artifacts.values()):
-            return "sc"
-        if "SC_TABLE" in (state.current or {}):
-            return "sc"
-        if any(ch in (state.current or {}) for ch in ("R1", "R2")):
-            return "bulk"
-        if any(art.kind in ("fastq", "fasta") for art in state.artifacts.values()):
-            return "bulk"
-        return "unknown"
-    for entry in sorted(sessions_dir.iterdir(), key=lambda p: p.name):
-        if not entry.is_dir():
-            continue
-        state_file = entry / "state.json"
-        if not state_file.exists():
-            results.append({"session_id": entry.name, "group": "unknown"})
-            continue
+    for row in sorted(rows, key=lambda r: r.updated_at, reverse=True):
         try:
-            state = SessionState.model_validate_json(state_file.read_text())
+            state = SessionState.model_validate(row.state_json)
         except Exception:
-            results.append({"session_id": entry.name, "group": "unknown"})
+            results.append({"session_id": str(row.id), "group": "unknown"})
             continue
         if not state.steps:
             continue
-        group = infer_group(state)
+        group = _infer_group(state)
         results.append({
-            "session_id": state.session_id,
+            "session_id": str(row.id),
+            "display_name": row.display_name,
             "created_at": state.created_at,
             "updated_at": state.updated_at,
             "steps": len(state.steps),
@@ -3072,25 +3086,22 @@ def list_sessions(user: Dict[str, str] = Depends(_require_user)):
     return results
 
 @app.post("/session/start")
-def start_session(user: Dict[str, str] = Depends(_require_user)):
-    sid = str(uuid.uuid4())
-    sdir = _session_dir_for_user(user["user_id"], sid)
-    sdir.mkdir(parents=True, exist_ok=True)
-    state = SessionState(
-        session_id=sid,
-        owner_user_id=user["user_id"],
-        owner_username=user["username"],
-        created_at=_now_iso(),
-        updated_at=_now_iso(),
+def start_session(user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):
+    session_row = session_create(
+        db, uuid.UUID(user["user_id"]), owner_username=user["username"]
     )
-    save_state(sdir, state)
+    sid = str(session_row.id)
+    sdir = _session_dir(sid)
+    sdir.mkdir(parents=True, exist_ok=True)
     return {"session_id": sid}
 
 @app.delete("/session/{sid}")
-def delete_session(sid: str, user: Dict[str, str] = Depends(_require_user)):
-    sdir, _ = _load_session_for_user(user, sid)
+def delete_session(sid: str, user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):
+    sdir, _ = _load_session_for_user(user, sid, db)
     try:
-        shutil.rmtree(sdir)
+        if sdir.exists():
+            shutil.rmtree(sdir)
+        session_delete(db, uuid.UUID(sid))
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
     except Exception as exc:
@@ -3102,37 +3113,25 @@ def rename_session(
     sid: str,
     body: RenameSessionBody = Body(...),
     user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
 ):
-    sdir, state = _load_session_for_user(user, sid)
-    new_sid = (body.new_session_id or "").strip()
-    if not new_sid:
-        raise HTTPException(status_code=400, detail="New session ID cannot be empty.")
-    if len(new_sid) > 80:
-        raise HTTPException(status_code=400, detail="New session ID is too long (max 80 characters).")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", new_sid):
+    _load_session_for_user(user, sid, db)
+    new_name = (body.new_session_id or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="New session name cannot be empty.")
+    if len(new_name) > 80:
+        raise HTTPException(status_code=400, detail="New session name is too long (max 80 characters).")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", new_name):
         raise HTTPException(
             status_code=400,
-            detail="New session ID can only contain letters, numbers, dot, underscore, and hyphen.",
+            detail="Session name can only contain letters, numbers, dot, underscore, and hyphen.",
         )
-    if new_sid == sid:
-        return {"ok": True, "old_session_id": sid, "new_session_id": new_sid}
-
-    target_dir = _session_dir_for_user(user["user_id"], new_sid)
-    if target_dir.exists():
-        raise HTTPException(status_code=409, detail="A session with that name already exists.")
-
-    try:
-        shutil.move(str(sdir), str(target_dir))
-        state.session_id = new_sid
-        save_state(target_dir, state)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to rename session: {exc}")
-
-    return {"ok": True, "old_session_id": sid, "new_session_id": new_sid}
+    session_update_display_name(db, uuid.UUID(sid), new_name)
+    return {"ok": True, "old_session_id": sid, "new_session_id": new_name}
 
 @app.post("/session/{sid}/cancel")
-def cancel_session_run(sid: str, user: Dict[str, str] = Depends(_require_user)):
-    _ = _load_session_for_user(user, sid)
+def cancel_session_run(sid: str, user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):
+    _ = _load_session_for_user(user, sid, db)
     _request_cancel(sid)
     proc = _get_running_proc(sid)
     was_running = bool(proc and proc.poll() is None)
@@ -3148,8 +3147,8 @@ def cancel_session_run(sid: str, user: Dict[str, str] = Depends(_require_user)):
     return {"ok": True, "session_id": sid, "was_running": was_running}
 
 @app.get("/session/{sid}/units")
-def list_units(sid: str, user: Dict[str, str] = Depends(_require_user)):
-    _ = _load_session_for_user(user, sid)
+def list_units(sid: str, user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):
+    _ = _load_session_for_user(user, sid, db)
 
     def _group(u):
         try:
@@ -3174,14 +3173,17 @@ async def upload_reads(
     r1: UploadFile = File(...),
     r2: Optional[UploadFile] = File(None),
     user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
 ):
-    sdir, sess = _load_session_for_user(user, sid)
+    sdir, sess = _load_session_for_user(user, sid, db)
     a1 = _save_upload_canonical(r1, "R1", sdir)
-    sess.artifacts[a1.name] = a1; sess.current["R1"] = a1.name
+    sess.artifacts[a1.name] = a1
+    sess.current["R1"] = a1.name
     if r2:
         a2 = _save_upload_canonical(r2, "R2", sdir)
-        sess.artifacts[a2.name] = a2; sess.current["R2"] = a2.name
-    save_state(sdir, sess)
+        sess.artifacts[a2.name] = a2
+        sess.current["R2"] = a2.name
+    save_state_db(db, sess)
     return {"ok": True, "current": sess.current, "artifacts": list(sess.artifacts.keys())}
 
 def _guess_aux_role(name: str) -> str:
@@ -3198,17 +3200,18 @@ async def upload_aux_file(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
 ):
-    sdir, sess = _load_session_for_user(user, sid)
+    sdir, sess = _load_session_for_user(user, sid, db)
     fname = name or file.filename
     with open(sdir / fname, "wb") as f:
         shutil.copyfileobj(file.file, f)
     role = _guess_aux_role(fname)
     if fname not in sess.aux_files:
         sess.aux_files.append(fname)
-    if role in ("v_primers","c_primers"):
+    if role in ("v_primers", "c_primers"):
         sess.aux[role] = fname
-    save_state(sdir, sess)
+    save_state_db(db, sess)
     return {"stored_as": fname, "role": role}
 
 @app.post("/session/{sid}/run")
@@ -3216,13 +3219,13 @@ def run_unit(
     sid: str,
     body: RunBody = Body(...),
     user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
 ):
-    sdir, sess = _load_session_for_user(user, sid)
+    sdir, sess = _load_session_for_user(user, sid, db)
     _clear_cancel_request(sid)
     unit = UNITS.get(body.unit_id)
     if not unit:
         raise HTTPException(404, f"Unknown unit_id '{body.unit_id}'")
-    # check required channels
     for ch in unit.requires:
         if ch not in sess.current:
             raise HTTPException(400, f"Unit '{unit.id}' requires channel {ch} to be available.")
@@ -3231,8 +3234,8 @@ def run_unit(
     try:
         step = unit.run(sess, sdir, body.params)
         sess.steps.append(step)
-        save_state(sdir, sess)
-        return {"step": step.model_dump(), "current": sess.current, "artifacts": {k:v.model_dump() for k,v in sess.artifacts.items()}}
+        save_state_db(db, sess)
+        return {"step": step.model_dump(), "current": sess.current, "artifacts": {k: v.model_dump() for k, v in sess.artifacts.items()}}
     except Exception as e:
         prefix = f"{step_idx:03d}_"
         logs = sorted([p for p in sdir.iterdir() if p.name.startswith(prefix) and p.suffix == ".log"])
@@ -3251,8 +3254,8 @@ def run_unit(
         _clear_running_proc(sid)
 
 @app.get("/session/{sid}/state")
-def get_state(sid: str, user: Dict[str, str] = Depends(_require_user)):
-    _, s = _load_session_for_user(user, sid)
+def get_state(sid: str, user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):
+    _, s = _load_session_for_user(user, sid, db)
     return s.model_dump()
 
 @app.get("/session/{sid}/download/{artifact_name}")
@@ -3260,8 +3263,9 @@ def download_artifact(
     sid: str,
     artifact_name: str,
     user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
 ):
-    sdir, s = _load_session_for_user(user, sid)
+    sdir, s = _load_session_for_user(user, sid, db)
     a = s.artifacts.get(artifact_name)
     if not a: raise HTTPException(404, "Artifact not found")
     path = sdir / a.path
@@ -3273,8 +3277,9 @@ def get_log(
     sid: str,
     step_index: int,
     user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
 ):
-    sdir, _ = _load_session_for_user(user, sid)
+    sdir, _ = _load_session_for_user(user, sid, db)
     prefix = f"{int(step_index):03d}_"
     logs = sorted([p for p in sdir.iterdir() if p.name.startswith(prefix) and p.suffix == ".log"])
     if not logs: raise HTTPException(404, "Log not found")

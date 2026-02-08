@@ -1,0 +1,40 @@
+# ImmunoStream / AIRR preprocessing app with PostgreSQL
+# Run: docker compose up --build
+# App: http://localhost:8000  UI: http://localhost:8000/ui/
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: immunostream-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: immunostream
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d immunostream"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: immunostream-app
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/immunostream
+      SESSION_FILES_DIR: /data/session_files
+    volumes:
+      - session_files:/data/session_files
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+volumes:
+  postgres_data:
+  session_files:
