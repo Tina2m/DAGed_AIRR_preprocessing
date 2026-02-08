@@ -1381,6 +1381,66 @@ def _next_idx(sess: SessionState) -> int: return len(sess.steps)
 def _with_step(name: str, idx: int) -> str:
     return f"{name}_s{idx:03d}"
 
+def _reset_session_state(sess: SessionState, sdir: pathlib.Path, delete_files: bool = True) -> Dict[str, Any]:
+    keep_artifacts = {name: art for name, art in sess.artifacts.items() if art.from_step == -1}
+    keep_paths = { (sdir / art.path).resolve() for art in keep_artifacts.values() }
+    aux_paths = { (sdir / name).resolve() for name in (sess.aux_files or []) }
+
+    if delete_files:
+        # Remove files for produced artifacts
+        for art in sess.artifacts.values():
+            if isinstance(art.from_step, int) and art.from_step >= 0:
+                try:
+                    path = (sdir / art.path).resolve()
+                    if path.exists() and path not in keep_paths and path not in aux_paths:
+                        path.unlink()
+                except Exception:
+                    pass
+
+        # Remove logs and generated scripts
+        for p in sdir.iterdir():
+            if not p.is_file():
+                continue
+            if p.resolve() in keep_paths or p.resolve() in aux_paths:
+                continue
+            if p.suffix.lower() in {".log", ".r"}:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+        # Clear QC plots folder
+        plot_dir = sdir / QC_PLOT_DIRNAME
+        if plot_dir.exists() and plot_dir.is_dir():
+            for f in plot_dir.iterdir():
+                if f.is_file():
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+            try:
+                plot_dir.rmdir()
+            except Exception:
+                pass
+
+        # Remove empty subdirectories (e.g., pairseq_###)
+        for d in sdir.iterdir():
+            if d.is_dir():
+                try:
+                    if not any(d.iterdir()):
+                        d.rmdir()
+                except Exception:
+                    pass
+
+    sess.steps = []
+    sess.artifacts = keep_artifacts
+    sess.current = {}
+    for art in keep_artifacts.values():
+        if art.channel:
+            sess.current[art.channel] = art.name
+
+    return {"kept_artifacts": list(keep_artifacts.keys())}
+
 # FilterSeq units
 class U_FilterQuality(UnitSpec):
     def run(self, sess, sdir, params):
@@ -3156,6 +3216,9 @@ class RunBody(BaseModel):
     unit_id: str
     params: Dict[str, Any] = {}
 
+class ResetBody(BaseModel):
+    delete_files: bool = True
+
 
 class RenameSessionBody(BaseModel):
     new_session_id: str
@@ -3399,6 +3462,18 @@ def run_unit(
     finally:
         CURRENT_RUN_SID.reset(token)
         _clear_running_proc(sid)
+
+@app.post("/session/{sid}/reset")
+def reset_session(
+    sid: str,
+    body: ResetBody = Body(default=ResetBody()),
+    user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
+):
+    sdir, sess = _load_session_for_user(user, sid, db)
+    info = _reset_session_state(sess, sdir, delete_files=bool(body.delete_files))
+    save_state_db(db, sess)
+    return {"ok": True, **info, "current": sess.current, "artifacts": list(sess.artifacts.keys())}
 
 @app.get("/session/{sid}/state")
 def get_state(sid: str, user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):

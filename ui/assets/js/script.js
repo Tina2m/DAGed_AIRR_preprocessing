@@ -1089,6 +1089,33 @@ async function refreshState() {
   applyStateSnapshot(state);
 }
 
+async function resetSessionState() {
+  try {
+    const response = await apiFetch(`/session/${SID}/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delete_files: true })
+    });
+    if (!response.ok) {
+      let message = response.statusText || 'Reset failed';
+      try {
+        const data = await response.json();
+        message = data?.detail?.error || data?.detail || message;
+      } catch (err) {
+        // ignore
+      }
+      alert(message);
+      return false;
+    }
+    await refreshState();
+    await loadHistory();
+    return true;
+  } catch (err) {
+    alert('Reset failed. Please try again.');
+    return false;
+  }
+}
+
 function collectUploadedItems(state) {
   const items = [];
   const artifacts = Object.values(state.artifacts || {});
@@ -1905,11 +1932,22 @@ async function runLinearPipeline(modeOverride){
   if(bulkSteps.length !== steps.length){
     pipeMsg('Single-cell units removed from pipeline','warn');
   }
-  const runPlan = buildBulkRunPlan(bulkSteps, modeOverride);
+  const mode = (modeOverride === 'restart' || modeOverride === 'continue')
+    ? modeOverride
+    : getPipelineRunMode();
+  const runPlan = buildBulkRunPlan(bulkSteps, mode);
   if (runPlan.error) {
     setRunStatus('Cannot continue from changed middle steps');
     pipeMsg(runPlan.error, 'warn');
     return;
+  }
+  if (mode === 'restart') {
+    const resetOk = await resetSessionState();
+    if (!resetOk) {
+      setRunStatus('Reset failed');
+      pipeMsg('Unable to reset session for restart', 'err');
+      return;
+    }
   }
   if (runPlan.note) {
     pipeMsg(runPlan.note, runPlan.noWork ? 'ok' : 'muted');
