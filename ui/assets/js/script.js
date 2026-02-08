@@ -1495,7 +1495,7 @@ function makeUnitCard(u){
           return renderOption(o);
         }).join('');
         const multiAttr = v.type === 'multiselect' ? ' multiple' : '';
-        inner += `${label}<select name="${esc(k)}"${multiAttr}>${opts}</select>`;
+        inner += `<div class="param-row" data-param="${esc(k)}">${label}<select name="${esc(k)}"${multiAttr}>${opts}</select></div>`;
       } else if (v.type === 'checklist' || v.type === 'checklist_single') {
         const defaultValues = new Set(
           (Array.isArray(v.default) ? v.default : [v.default])
@@ -1511,17 +1511,17 @@ function makeUnitCard(u){
           const checked = defaultValues.has(String(value)) ? ' checked' : '';
           return `<label class="checklist-option"><input type="checkbox" name="${esc(k)}" value="${esc(value)}"${exclusiveAttr}${checked}> ${esc(text)}${hint}</label>`;
         }).join('');
-        inner += `${label}<div class="select-checklist">${options}</div>`;
+        inner += `<div class="param-row" data-param="${esc(k)}">${label}<div class="select-checklist">${options}</div></div>`;
       } else if (v.type === 'checkbox') {
         const checked = v.default ? 'checked' : '';
-        inner += `<label class="checkbox-label"><input type="checkbox" name="${esc(k)}" ${checked}> ${esc(labelText)}${help}</label>`;
+        inner += `<div class="param-row" data-param="${esc(k)}"><label class="checkbox-label"><input type="checkbox" name="${esc(k)}" ${checked}> ${esc(labelText)}${help}</label></div>`;
       } else if (v.type === 'file') {
-        inner += `${label}<input name="${esc(k)}" placeholder="${esc(v.accept||'')}" />` +
-                 `<div class="muted">Upload in section 1 → aux; I'll fill this automatically.</div>`;
+        inner += `<div class="param-row" data-param="${esc(k)}">${label}<input name="${esc(k)}" placeholder="${esc(v.accept||'')}" />` +
+                 `<div class="muted">Upload in section 1 → aux; I'll fill this automatically.</div></div>`;
       } else {
         const val = v.default ?? ''; const ph = v.placeholder ?? '';
         const typeAttr = (v.type === 'int') ? 'type="number"' : 'type="text"';
-        inner += `${label}<input ${typeAttr} name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}">`;
+        inner += `<div class="param-row" data-param="${esc(k)}">${label}<input ${typeAttr} name="${esc(k)}" value="${esc(val)}" placeholder="${esc(ph)}"></div>`;
       }
     }
     paramsHTML = `
@@ -1561,6 +1561,10 @@ function makeUnitCard(u){
     });
   });
 
+  if ((u.id || '').toLowerCase() === 'pair_seq') {
+    setupPairSeqFieldControls(card);
+  }
+
   card.querySelector('.run').addEventListener('click', async (event) => {
     const button = event.currentTarget;
     setButtonRunning(button, true, 'Running...');
@@ -1582,6 +1586,25 @@ function makeUnitCard(u){
   // searchable haystack
   card.dataset.haystack = [u.id, u.label, ...(u.requires||[]), unitCategory(u.id)].join(' ').toLowerCase();
   return card;
+}
+
+function setupPairSeqFieldControls(card){
+  const row1 = card.querySelector('.param-row[data-param="fields_1"]');
+  const row2 = card.querySelector('.param-row[data-param="fields_2"]');
+  if (!row1 && !row2) {
+    return;
+  }
+  const toggles = Array.from(card.querySelectorAll('input[type="checkbox"][name="annotation_fields"]'));
+  if (!toggles.length) {
+    return;
+  }
+  const update = () => {
+    const selected = toggles.filter(cb => cb.checked).map(cb => cb.value);
+    if (row1) row1.style.display = selected.includes('1f') ? '' : 'none';
+    if (row2) row2.style.display = selected.includes('2f') ? '' : 'none';
+  };
+  toggles.forEach(cb => cb.addEventListener('change', update));
+  update();
 }
 
 async function renderUnits(){

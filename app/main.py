@@ -1242,6 +1242,7 @@ def find_pass_for_prefix(sess_dir: pathlib.Path, prefix: str) -> str:
         for tag in ("mask-pass","align-primers-pass","primers-pass","extract-pass","score-pass", "quality-pass",
                     "length-pass","missing-pass","repeats-pass","trimqual-pass","maskqual-pass",
                     "pair-pass",
+                    "consensus-pass","consensus-fail",
                     "collapse-unique","collapse-pass","collapse-fail","collapse-failed"):
             p = sess_dir / f"{prefix}_{tag}.{ext}"
             if p.exists(): return p.name
@@ -1377,6 +1378,9 @@ class UnitSpec(BaseModel):
 
 def _next_idx(sess: SessionState) -> int: return len(sess.steps)
 
+def _with_step(name: str, idx: int) -> str:
+    return f"{name}_s{idx:03d}"
+
 # FilterSeq units
 class U_FilterQuality(UnitSpec):
     def run(self, sess, sdir, params):
@@ -1385,7 +1389,8 @@ class U_FilterQuality(UnitSpec):
         q = str(params.get("qmin", 20))
         run_cmd(["FilterSeq.py","quality","-s",str(r1),"-q",q,"--outname",f"R1_q{q}","--log",log.name], sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_q{q}")
-        produced = [Artifact(name="R1_quality", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        name_r1 = _with_step("R1_quality", idx)
+        produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
         produced += _generate_quality_plots(
             sdir,
             idx,
@@ -1399,7 +1404,8 @@ class U_FilterQuality(UnitSpec):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             run_cmd(["FilterSeq.py","quality","-s",str(r2),"-q",q,"--outname",f"R2_q{q}","--log",log.name], sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_q{q}")
-            produced.append(Artifact(name="R2_quality", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            name_r2 = _with_step("R2_quality", idx)
+            produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
             produced += _generate_quality_plots(
                 sdir,
                 idx,
@@ -1409,8 +1415,8 @@ class U_FilterQuality(UnitSpec):
                 sdir / out_r2,
                 log,
             )
-            sess.current["R2"] = "R2_quality"
-        sess.current["R1"] = "R1_quality"
+            sess.current["R2"] = name_r2
+        sess.current["R1"] = name_r1
         for a in produced: sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -1423,7 +1429,8 @@ class U_FilterLength(UnitSpec):
         if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd.append("--inner")
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_len{n}")
-        produced = [Artifact(name="R1_length", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        name_r1 = _with_step("R1_length", idx)
+        produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
         produced += _generate_length_plots(
             sdir,
             idx,
@@ -1439,7 +1446,8 @@ class U_FilterLength(UnitSpec):
             if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd2.append("--inner")
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_len{n}")
-            produced.append(Artifact(name="R2_length", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            name_r2 = _with_step("R2_length", idx)
+            produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
             produced += _generate_length_plots(
                 sdir,
                 idx,
@@ -1449,8 +1457,8 @@ class U_FilterLength(UnitSpec):
                 sdir / out_r2,
                 log,
             )
-            sess.current["R2"] = "R2_length"
-        sess.current["R1"] = "R1_length"
+            sess.current["R2"] = name_r2
+        sess.current["R1"] = name_r1
         for a in produced: sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -1463,7 +1471,8 @@ class U_FilterMissing(UnitSpec):
         if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd.append("--inner")
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_m{n}")
-        produced = [Artifact(name="R1_missing", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        name_r1 = _with_step("R1_missing", idx)
+        produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
         produced += _generate_missing_plots(
             sdir,
             idx,
@@ -1479,7 +1488,8 @@ class U_FilterMissing(UnitSpec):
             if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd2.append("--inner")
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_m{n}")
-            produced.append(Artifact(name="R2_missing", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            name_r2 = _with_step("R2_missing", idx)
+            produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
             produced += _generate_missing_plots(
                 sdir,
                 idx,
@@ -1489,8 +1499,8 @@ class U_FilterMissing(UnitSpec):
                 sdir / out_r2,
                 log,
             )
-            sess.current["R2"] = "R2_missing"
-        sess.current["R1"] = "R1_missing"
+            sess.current["R2"] = name_r2
+        sess.current["R1"] = name_r1
         for a in produced: sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -1504,7 +1514,8 @@ class U_FilterRepeats(UnitSpec):
         if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd.append("--inner")
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_rep{n}")
-        produced = [Artifact(name="R1_repeats", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        name_r1 = _with_step("R1_repeats", idx)
+        produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
         produced += _generate_repeats_plots(
             sdir,
             idx,
@@ -1521,7 +1532,8 @@ class U_FilterRepeats(UnitSpec):
             if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd2.append("--inner")
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_rep{n}")
-            produced.append(Artifact(name="R2_repeats", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            name_r2 = _with_step("R2_repeats", idx)
+            produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
             produced += _generate_repeats_plots(
                 sdir,
                 idx,
@@ -1531,8 +1543,8 @@ class U_FilterRepeats(UnitSpec):
                 sdir / out_r2,
                 log,
             )
-            sess.current["R2"] = "R2_repeats"
-        sess.current["R1"] = "R1_repeats"
+            sess.current["R2"] = name_r2
+        sess.current["R1"] = name_r1
         for a in produced: sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -1546,7 +1558,8 @@ class U_FilterTrimQual(UnitSpec):
         if str(params.get("reverse","false")).lower() in ("1","true","yes","y"): cmd.append("--reverse")
         run_cmd(cmd, sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_tq{q}")
-        produced = [Artifact(name="R1_trimqual", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        name_r1 = _with_step("R1_trimqual", idx)
+        produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
         produced += _generate_quality_plots(
             sdir,
             idx,
@@ -1563,7 +1576,8 @@ class U_FilterTrimQual(UnitSpec):
             if str(params.get("reverse","false")).lower() in ("1","true","yes","y"): cmd2.append("--reverse")
             run_cmd(cmd2, sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_tq{q}")
-            produced.append(Artifact(name="R2_trimqual", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            name_r2 = _with_step("R2_trimqual", idx)
+            produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
             produced += _generate_quality_plots(
                 sdir,
                 idx,
@@ -1573,8 +1587,8 @@ class U_FilterTrimQual(UnitSpec):
                 sdir / out_r2,
                 log,
             )
-            sess.current["R2"] = "R2_trimqual"
-        sess.current["R1"] = "R1_trimqual"
+            sess.current["R2"] = name_r2
+        sess.current["R1"] = name_r1
         for a in produced: sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -1585,7 +1599,8 @@ class U_FilterMaskQual(UnitSpec):
         q = str(params.get("qmin", 20))
         run_cmd(["FilterSeq.py","maskqual","-s",str(r1),"-q",q,"--outname",f"R1_mq{q}","--log",log.name], sdir, log)
         out_r1 = find_pass_for_prefix(sdir, f"R1_mq{q}")
-        produced = [Artifact(name="R1_maskqual", path=out_r1, kind="fastq", channel="R1", from_step=idx)]
+        name_r1 = _with_step("R1_maskqual", idx)
+        produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
         produced += _generate_maskqual_plots(
             sdir,
             idx,
@@ -1599,7 +1614,8 @@ class U_FilterMaskQual(UnitSpec):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
             run_cmd(["FilterSeq.py","maskqual","-s",str(r2),"-q",q,"--outname",f"R2_mq{q}","--log",log.name], sdir, log)
             out_r2 = find_pass_for_prefix(sdir, f"R2_mq{q}")
-            produced.append(Artifact(name="R2_maskqual", path=out_r2, kind="fastq", channel="R2", from_step=idx))
+            name_r2 = _with_step("R2_maskqual", idx)
+            produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
             produced += _generate_maskqual_plots(
                 sdir,
                 idx,
@@ -1609,8 +1625,8 @@ class U_FilterMaskQual(UnitSpec):
                 sdir / out_r2,
                 log,
             )
-            sess.current["R2"] = "R2_maskqual"
-        sess.current["R1"] = "R1_maskqual"
+            sess.current["R2"] = name_r2
+        sess.current["R1"] = name_r1
         for a in produced: sess.artifacts[a.name] = a
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -1687,7 +1703,7 @@ class U_MaskPrimersScore(UnitSpec):
             raise RuntimeError(_maskprimers_no_output_message(log))
         kind = _detect_kind_from_name(out_path) or "fastq"
         channel = input_channel or _guess_channel_from_name(out_path) or "R1"
-        artifact_name = f"{channel}_score"
+        artifact_name = _with_step(f"{channel}_score", idx)
         produced.append(Artifact(name=artifact_name, path=out_path, kind=kind, channel=channel, from_step=idx))
         sess.artifacts[artifact_name] = produced[-1]
         if channel:
@@ -1776,7 +1792,7 @@ class U_MaskPrimersAlign(UnitSpec):
             raise RuntimeError(_maskprimers_no_output_message(log))
         kind = _detect_kind_from_name(out_path) or "fastq"
         channel = input_channel or _guess_channel_from_name(out_path) or "R1"
-        artifact_name = f"{channel}_align"
+        artifact_name = _with_step(f"{channel}_align", idx)
         produced.append(Artifact(name=artifact_name, path=out_path, kind=kind, channel=channel, from_step=idx))
         sess.artifacts[artifact_name] = produced[-1]
         if channel:
@@ -1847,7 +1863,7 @@ class U_MaskPrimersExtract(UnitSpec):
             raise RuntimeError(_maskprimers_no_output_message(log))
         kind = _detect_kind_from_name(out_path) or "fastq"
         channel = input_channel or _guess_channel_from_name(out_path) or "R1"
-        artifact_name = f"{channel}_extract"
+        artifact_name = _with_step(f"{channel}_extract", idx)
         produced.append(Artifact(name=artifact_name, path=out_path, kind=kind, channel=channel, from_step=idx))
         sess.artifacts[artifact_name] = produced[-1]
         if channel:
@@ -1870,6 +1886,16 @@ class U_PairSeq(UnitSpec):
         _assert_channel(sess, tail_channel)
         seq1 = sdir / sess.artifacts[sess.current[head_channel]].path
         seq2 = sdir / sess.artifacts[sess.current[tail_channel]].path
+        outdir_param = (params.get("outdir") or "").strip()
+        if not outdir_param:
+            outdir_param = f"pairseq_{idx:03d}"
+        if os.path.isabs(outdir_param):
+            raise HTTPException(400, "outdir must be a relative path within the session.")
+        outbase_dir = (sdir / outdir_param).resolve()
+        if not str(outbase_dir).startswith(str(sdir.resolve())):
+            raise HTTPException(400, "outdir must be within the session directory.")
+        outbase_dir.mkdir(parents=True, exist_ok=True)
+
         cmd = ["PairSeq.py", "-1", str(seq1), "-2", str(seq2)]
 
         if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
@@ -1905,18 +1931,21 @@ class U_PairSeq(UnitSpec):
         selected = set(normalize_fields(params.get("annotation_fields")))
         legacy_1 = dedupe(normalize_fields(params.get("fields_1")))
         legacy_2 = dedupe(normalize_fields(params.get("fields_2")))
-        default_fields = ["BARCODE", "PRIMER", "MID", "VPRIMER", "CPRIMER", "UMI"]
+        default_fields = ["BARCODE"]
 
-        fields_1 = legacy_1
-        fields_2 = legacy_2
-        if "1f" in selected and not fields_1:
+        use_1f = "1f" in selected
+        use_2f = "2f" in selected
+
+        fields_1 = legacy_1 if use_1f else []
+        fields_2 = legacy_2 if use_2f else []
+        if use_1f and not fields_1:
             fields_1 = list(default_fields)
-        if "2f" in selected and not fields_2:
+        if use_2f and not fields_2:
             fields_2 = list(default_fields)
 
-        if fields_1:
+        if use_1f and fields_1:
             cmd += ["--1f"] + fields_1
-        if fields_2:
+        if use_2f and fields_2:
             cmd += ["--2f"] + fields_2
 
         act = (params.get("act") or "").strip()
@@ -1933,34 +1962,91 @@ class U_PairSeq(UnitSpec):
                 raise HTTPException(400, f"Invalid coord value: {coord}.")
             cmd += ["--coord", coord]
 
-        start_ts = time.time()
-        run_cmd(cmd, sdir, log)
+        def _collect_candidates(base_dir: pathlib.Path) -> List[pathlib.Path]:
+            found: List[pathlib.Path] = []
+            for entry in base_dir.iterdir():
+                if entry.is_file() and "pair-pass" in entry.name:
+                    try:
+                        if entry.stat().st_mtime >= (start_ts - 1):
+                            found.append(entry)
+                    except Exception:
+                        found.append(entry)
+            if not found:
+                found = [p for p in base_dir.iterdir() if p.is_file() and "pair-pass" in p.name]
+            return found
 
-        candidates = []
-        for entry in sdir.iterdir():
-            if entry.is_file() and "pair-pass" in entry.name:
-                try:
-                    if entry.stat().st_mtime >= (start_ts - 1):
-                        candidates.append(entry)
-                except Exception:
-                    candidates.append(entry)
-        if not candidates:
-            candidates = [p for p in sdir.iterdir() if p.is_file() and "pair-pass" in p.name]
+        start_ts = time.time()
+        run_cmd(cmd, outbase_dir, log)
+
+        candidates = _collect_candidates(outbase_dir)
+        if not candidates and outbase_dir != sdir:
+            # Some PairSeq versions write outputs next to inputs, not CWD.
+            candidates = _collect_candidates(sdir)
+            if not candidates:
+                input_dir = seq1.parent.resolve()
+                if str(input_dir).startswith(str(sdir.resolve())):
+                    candidates = _collect_candidates(input_dir)
+            if candidates:
+                moved = []
+                for entry in candidates:
+                    dest = outbase_dir / entry.name
+                    try:
+                        entry.replace(dest)
+                    except Exception:
+                        shutil.copy2(entry, dest)
+                        try:
+                            entry.unlink()
+                        except Exception:
+                            pass
+                    moved.append(dest)
+                candidates = moved
 
         if not candidates:
             raise HTTPException(500, "Expected output not found for PairSeq.")
 
-        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        produced: List[Artifact] = []
-        for idx_out, entry in enumerate(candidates, start=1):
-            rel_path = entry.name
-            kind = _detect_kind_from_name(rel_path) or _detect_kind_from_name(seq1.name) or "fastq"
-            artifact_name = "PAIR" if idx_out == 1 else f"PAIR_{idx_out}"
-            produced.append(Artifact(name=artifact_name, path=rel_path, kind=kind, channel=None, from_step=idx))
-            sess.artifacts[artifact_name] = produced[-1]
+        def _infer_pair_index(name: str) -> Optional[int]:
+            upper = name.upper()
+            if re.search(r"(^|[^0-9A-Z])R1([^0-9A-Z]|$)", upper):
+                return 1
+            if re.search(r"(^|[^0-9A-Z])R2([^0-9A-Z]|$)", upper):
+                return 2
+            if re.search(r"(^|[^0-9A-Z])1([^0-9A-Z]|$)", upper):
+                return 1
+            if re.search(r"(^|[^0-9A-Z])2([^0-9A-Z]|$)", upper):
+                return 2
+            return None
 
-        sess.current.pop("R1", None)
-        sess.current.pop("R2", None)
+        indexed = [(entry, _infer_pair_index(entry.name)) for entry in candidates]
+        if any(idx_val in (1, 2) for _entry, idx_val in indexed):
+            indexed.sort(key=lambda item: (item[1] is None, item[1] or 99, item[0].name))
+        else:
+            indexed.sort(key=lambda item: item[0].stat().st_mtime, reverse=True)
+
+        produced: List[Artifact] = []
+        assigned: Dict[str, str] = {}
+        for idx_out, (entry, idx_hint) in enumerate(indexed, start=1):
+            rel_path = str(pathlib.Path(outdir_param) / entry.name)
+            kind = _detect_kind_from_name(rel_path) or _detect_kind_from_name(seq1.name) or "fastq"
+            label_idx = idx_hint or idx_out
+            artifact_name = _with_step(f"PAIR_{label_idx}", idx)
+            channel = None
+            if label_idx == 1:
+                channel = head_channel
+            elif label_idx == 2:
+                channel = tail_channel
+            produced.append(Artifact(name=artifact_name, path=rel_path, kind=kind, channel=channel, from_step=idx))
+            sess.artifacts[artifact_name] = produced[-1]
+            if channel:
+                assigned[channel] = artifact_name
+
+        if "R1" in assigned:
+            sess.current["R1"] = assigned["R1"]
+        else:
+            sess.current.pop("R1", None)
+        if "R2" in assigned:
+            sess.current["R2"] = assigned["R2"]
+        else:
+            sess.current.pop("R2", None)
 
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
@@ -2081,7 +2167,8 @@ class U_CollapseSeq(UnitSpec):
             raise HTTPException(500, f"Expected output not found: {out_rel}")
 
         kind = _detect_kind_from_name(out_rel) or _detect_kind_from_name(seq_path.name) or "fastq"
-        a = Artifact(name="COLLAPSED", path=out_rel, kind=kind, channel=input_channel or None, from_step=idx)
+        name = _with_step("COLLAPSED", idx)
+        a = Artifact(name=name, path=out_rel, kind=kind, channel=input_channel or None, from_step=idx)
         sess.artifacts[a.name] = a
         if input_channel:
             sess.current[input_channel] = a.name
@@ -2090,9 +2177,13 @@ class U_CollapseSeq(UnitSpec):
 class U_BuildConsensus(UnitSpec):
     def run(self, sess, sdir, params):
         idx = _next_idx(sess); log = sdir / f"{idx:03d}_BuildConsensus.log"
-        key = sess.current.get("R1")
-        if not key: raise HTTPException(400, "BuildConsensus needs a FASTQ/FASTA (R1).")
-        src = sdir / sess.artifacts[key].path
+        seq_path, input_channel = _resolve_input_sequence(sess, sdir, params)
+        channel = (input_channel or (params.get("input_channel") or "").strip().upper())
+        if channel and channel not in ("R1", "R2"):
+            raise HTTPException(400, "input_channel must be R1 or R2.")
+        if not channel:
+            channel = _guess_channel_from_name(seq_path.name) or "R1"
+        src = seq_path
         outdir_param = (params.get("outdir") or "").strip()
         outbase_dir = sdir
         if outdir_param:
@@ -2103,7 +2194,13 @@ class U_BuildConsensus(UnitSpec):
                 raise HTTPException(400, "outdir must be within the session directory.")
             outbase_dir.mkdir(parents=True, exist_ok=True)
 
-        outprefix = (params.get("outname") or "CONS").strip() or "CONS"
+        raw_outname = (params.get("outname") or "").strip()
+        if not raw_outname:
+            raw_outname = "CONS"
+        if raw_outname == "CONS":
+            outprefix = f"{channel}_{raw_outname}"
+        else:
+            outprefix = raw_outname
         cmd = ["BuildConsensus.py","-s",str(src),"--outname",outprefix,"--log",log.name]
         if outdir_param:
             cmd += ["--outdir", str(outbase_dir)]
@@ -2119,8 +2216,19 @@ class U_BuildConsensus(UnitSpec):
             cmd += ["--delim"] + parts
         if params.get("min_count"):
             cmd += ["-n", str(params["min_count"])]
-        if params.get("barcode_field"):
-            cmd += ["--bf", str(params["barcode_field"])]
+        barcode_field = params.get("barcode_field")
+        if barcode_field not in (None, ""):
+            if isinstance(barcode_field, bool):
+                if barcode_field:
+                    cmd += ["--bf", "BARCODE"]
+            else:
+                bf = str(barcode_field).strip()
+                if bf.lower() in ("true", "t", "1", "yes", "y"):
+                    cmd += ["--bf", "BARCODE"]
+                elif bf.lower() in ("false", "f", "0", "no", "n"):
+                    pass
+                elif bf:
+                    cmd += ["--bf", bf]
         if params.get("qmin"):
             cmd += ["-q", str(params["qmin"])]
         if params.get("freq"):
@@ -2148,11 +2256,22 @@ class U_BuildConsensus(UnitSpec):
 
         run_cmd(cmd, sdir, log)
         # BuildConsensus creates multiple outputs; keep the consensus-pass.* as representative
-        out = find_pass_for_prefix(outbase_dir, f"{outprefix}_consensus")
-        rel_base = pathlib.Path(outdir_param) if outdir_param else pathlib.Path("")
+        try:
+            out = find_pass_for_prefix(outbase_dir, outprefix)
+            rel_base = pathlib.Path(outdir_param) if outdir_param else pathlib.Path("")
+        except HTTPException:
+            # Some versions write outputs next to input file instead of CWD.
+            input_dir = src.parent.resolve()
+            out = find_pass_for_prefix(input_dir, outprefix)
+            if not str(input_dir).startswith(str(sdir.resolve())):
+                raise
+            rel_base = input_dir.relative_to(sdir.resolve())
         kind = _detect_kind_from_name(out) or "fastq"
-        a = Artifact(name="CONSENSUS", path=str(rel_base / out), kind=kind, from_step=idx)
+        name = _with_step(f"{channel}_consensus", idx)
+        a = Artifact(name=name, path=str(rel_base / out), kind=kind, channel=channel, from_step=idx)
         sess.artifacts[a.name] = a
+        if channel:
+            sess.current[channel] = a.name
         return StepResult(step_index=idx, unit=self.id, params=params, produced=[a])
     
 class U_MergeSamples(UnitSpec):
@@ -2237,7 +2356,8 @@ class U_MergeSamples(UnitSpec):
         cmd = ["Rscript", "--vanilla", rfile.name, out_path.name] + paths
         run_cmd(cmd, sess_dir, log)
 
-        a = Artifact(name="SC_MERGED", path=out_path.name, kind="tab", from_step=idx)
+        name = _with_step("SC_MERGED", idx)
+        a = Artifact(name=name, path=out_path.name, kind="tab", from_step=idx)
         sess.artifacts[a.name] = a
         # Track a single-cell table "channel" for downstream SC units
         sess.current["SC_TABLE"] = a.name
@@ -2377,7 +2497,8 @@ if (mode == "per_file") {{
                 stem = re.sub(r"\\.[^.]+$", "", n)
                 out = f"SC_prod_{stem}.tsv"
                 if (sess_dir / out).exists():
-                    a = Artifact(name=f"SC_PROD_{stem}", path=out, kind="tab", from_step=idx)
+                    name = _with_step(f"SC_PROD_{stem}", idx)
+                    a = Artifact(name=name, path=out, kind="tab", from_step=idx)
                     sess.artifacts[a.name] = a
                     produced.append(a)
             # set SC_TABLE to the first produced (if any)
@@ -2385,7 +2506,8 @@ if (mode == "per_file") {{
                 sess.current["SC_TABLE"] = produced[0].name
         else:
             # merge mode: one output
-            a = Artifact(name="SC_PRODUCTIVE", path=out_merged, kind="tab", from_step=idx)
+            name = _with_step("SC_PRODUCTIVE", idx)
+            a = Artifact(name=name, path=out_merged, kind="tab", from_step=idx)
             sess.artifacts[a.name] = a
             produced.append(a)
             sess.current["SC_TABLE"] = a.name
@@ -2574,13 +2696,15 @@ if (mode == "per_file") {{
                 stem = re.sub(r"\.[^.]+$", "", n)
                 out = f"SC_noMH_{stem}.tsv"
                 if (sess_dir / out).exists():
-                    a = Artifact(name=f"SC_NOMH_{stem}", path=out, kind="tab", from_step=idx)
+                    name = _with_step(f"SC_NOMH_{stem}", idx)
+                    a = Artifact(name=name, path=out, kind="tab", from_step=idx)
                     sess.artifacts[a.name] = a
                     produced.append(a)
             if produced:
                 sess.current["SC_TABLE"] = produced[0].name
         else:
-            a = Artifact(name="SC_NO_MULTI_HEAVY", path=out_merged, kind="tab", from_step=idx)
+            name = _with_step("SC_NO_MULTI_HEAVY", idx)
+            a = Artifact(name=name, path=out_merged, kind="tab", from_step=idx)
             sess.artifacts[a.name] = a
             produced.append(a)
             sess.current["SC_TABLE"] = a.name
@@ -2750,13 +2874,15 @@ if (mode == "per_file") {{
                 stem = re.sub(r"\.[^.]+$", "", n)
                 out = f"SC_noH_{stem}.tsv"
                 if (sess_dir / out).exists():
-                    a = Artifact(name=f"SC_NOH_{stem}", path=out, kind="tab", from_step=idx)
+                    name = _with_step(f"SC_NOH_{stem}", idx)
+                    a = Artifact(name=name, path=out, kind="tab", from_step=idx)
                     sess.artifacts[a.name] = a
                     produced.append(a)
             if produced:
                 sess.current["SC_TABLE"] = produced[0].name
         else:
-            a = Artifact(name="SC_NO_HEAVY", path=out_merged, kind="tab", from_step=idx)
+            name = _with_step("SC_NO_HEAVY", idx)
+            a = Artifact(name=name, path=out_merged, kind="tab", from_step=idx)
             sess.artifacts[a.name] = a
             produced.append(a)
             sess.current["SC_TABLE"] = a.name
@@ -2871,6 +2997,7 @@ UNITS: Dict[str, UnitSpec] = {
         params_schema={
             "head_channel":{"type":"select","label":"Head/primary sequences","options":["R1","R2"],"default":"R1"},
             "tail_channel":{"type":"select","label":"Tail/secondary sequences","options":["R1","R2"],"default":"R2"},
+            "outdir":{"type":"text","label":"Outdir","placeholder":"pairseq_001 (auto if blank)"},
             "__section_output":{"type":"section","label":"output considerations"},
             "failed":{"type":"checkbox","default":False},
             "fasta":{"type":"checkbox","default":False},
@@ -2883,6 +3010,24 @@ UNITS: Dict[str, UnitSpec] = {
                     {"value":"1f","label":"1f","hint":"(copy from file1 to file2)"},
                     {"value":"2f","label":"2f","hint":"(copy from file2 to file1)"},
                 ],
+            },
+            "fields_1":{
+                "type":"select",
+                "label":"Fields for 1f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "fields_2":{
+                "type":"select",
+                "label":"Fields for 2f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
             },
             "act":{"type":"select","label":"Collapse action","options":[{"value":"","label":"(none)"}, "min", "max", "sum", "set", "cat"],"default":""},
             "coord":{"type":"select","label":"Coordinate format","options":[{"value":"","label":"(none)"}, "illumina", "solexa", "sra", "454", "presto"],"default":""},
@@ -2904,7 +3049,7 @@ UNITS: Dict[str, UnitSpec] = {
             "max_missing":{"type":"int","label":"Max missing","min":0},
             "uniq_fields":{"type":"text","label":"Uniq fields","placeholder":"field1 field2"},
             "copy_fields":{"type":"text","label":"Copy fields","placeholder":"field1 field2"},
-            "act":{"type":"multiselect","label":"Collapse action","options":["min", "max", "sum", "set"],"default":[]},
+            "act":{"type":"select","label":"Collapse action","options":[{"value":"","label":"(none)"}, "min", "max", "sum", "set"],"default":""},
             "inner":{"type":"checkbox","default":False},
             "keepmiss":{"type":"checkbox","default":False},
             "max_field":{"type":"text","label":"Max field","placeholder":"field name"},
@@ -2914,13 +3059,15 @@ UNITS: Dict[str, UnitSpec] = {
     "build_consensus": U_BuildConsensus(
         id="build_consensus", label="BuildConsensus", requires=[], group="bulk",
         params_schema={
+            "input_artifact":{"type":"text","label":"Input artifact","placeholder":"artifact key or filename (optional)"},
+            "input_channel":{"type":"select","label":"Input channel","options":["R1","R2"],"default":"R1"},
             "outdir":{"type":"text","label":"Outdir","placeholder":"relative folder (optional)"},
             "outname":{"type":"text","label":"Outname","default":"CONS"},
             "failed":{"type":"checkbox","default":False},
             "fasta":{"type":"checkbox","default":False},
             "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
             "min_count":{"type":"int","label":"Min count","min":1},
-            "barcode_field":{"type":"text","label":"Barcode field","placeholder":"BARCODE"},
+            "barcode_field":{"type":"checkbox","label":"Use BARCODE field","default":True},
             "qmin":{"type":"text","placeholder":"min quality"},
             "freq":{"type":"text","placeholder":"min freq"},
             "maxgap":{"type":"text","placeholder":"0..1"},
@@ -3284,3 +3431,4 @@ def get_log(
     logs = sorted([p for p in sdir.iterdir() if p.name.startswith(prefix) and p.suffix == ".log"])
     if not logs: raise HTTPException(404, "Log not found")
     return "\n\n".join(p.read_text(errors="ignore") for p in logs)
+
