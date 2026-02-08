@@ -1,0 +1,21 @@
+flowchart LR
+  UB["User Browser<br/>(static pages)"]
+  UI["/ui/*"]
+  APP["FastAPI app<br/>(app/main.py)<br/>auth, sessions, upload, run, download, logs"]
+  API["/auth/*, /session/* endpoints"]
+  DATA["/data (volume)"]
+  AUTHU["_auth/users.json"]
+  AUTHT["_auth/tokens.json"]
+  SESS["users/&lt;user_id&gt;/sessions/&lt;session_id&gt;/"]
+  STATE["state.json"]
+  ART["artifacts (FASTQ/FASTA/TSV/etc.)"]
+  LOGS["*.log"]
+  PRESTO["pRESTO tools via subprocess"]
+
+  UB --> UI --> APP
+  UB -->|"fetch + Bearer token"| API --> DATA
+  DATA --> AUTHU
+  DATA --> AUTHT
+  DATA --> SESS --> STATE
+  SESS --> ART
+  SESS --> LOGS --> PRESTO

@@ -1,0 +1,92 @@
+:root{
+  --nav-bg:#0b1220;
+  --nav-border:rgba(255,255,255,.08);
+  --nav-text:#cbd5e1;
+  --nav-text-active:#ffffff;
+  --grad-from:#22d3ee;
+  --grad-to:#2563eb;
+}
+body.has-site-header{
+  padding-top:0;
+}
+.site-header{
+  position:sticky;
+  top:0;
+  z-index:1000;
+  width:100%;
+  background:linear-gradient(180deg, rgba(11,18,32,.92), rgba(11,18,32,.86));
+  backdrop-filter:saturate(160%) blur(8px);
+  border-bottom:1px solid var(--nav-border);
+}
+.site-header .bar{
+  max-width:1280px;
+  margin:0 auto;
+  padding:12px 20px;
+  display:flex;
+  align-items:center;
+  gap:18px;
+}
+.brand{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  color:#e5e7eb;
+  text-decoration:none;
+}
+.brand .dna{
+  width:28px;
+  height:28px;
+  display:block;
+}
+.brand .title{
+  font-weight:700;
+  letter-spacing:.2px;
+  font-size:22px;
+}
+.nav{
+  margin-left:auto;
+  display:flex;
+  gap:10px;
+  align-items:center;
+}
+.nav-link{
+  --pad-x:14px;
+  color:var(--nav-text);
+  text-decoration:none;
+  padding:8px var(--pad-x);
+  border-radius:10px;
+  border:1px solid transparent;
+  transition:background .15s, color .15s, border-color .15s, transform .02s;
+}
+.nav-user{
+  color:var(--nav-text);
+  font-size:13px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.04);
+  white-space:nowrap;
+}
+.nav-link:hover{
+  color:#fff;
+  background:rgba(255,255,255,.06);
+  border-color:var(--nav-border);
+}
+.nav-link:active{transform:translateY(1px)}
+.nav-link.active{
+  color:var(--nav-text-active);
+  background:linear-gradient(135deg,var(--grad-from),var(--grad-to));
+  border-color:transparent;
+  box-shadow:0 6px 18px rgba(37,99,235,.35);
+}
+@media (max-width:720px){
+  .brand .title{font-size:18px}
+  .nav{gap:6px}
+  .nav-link{--pad-x:10px; padding:7px var(--pad-x); font-size:14px}
+}
+.grad-text{
+  background:linear-gradient(135deg,var(--grad-from),var(--grad-to));
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+}

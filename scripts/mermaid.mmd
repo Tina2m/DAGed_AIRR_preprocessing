@@ -1,0 +1,70 @@
+```mermaid
+flowchart LR
+  UB["User Browser\n(static pages)"]
+  UI["/ui/*"]
+  APP["FastAPI app\n(app/main.py)\nauth, sessions, upload, run, download, logs"]
+  API["/auth/*, /session/* endpoints"]
+  DATA["/data (volume)"]
+  AUTHU["_auth/users.json"]
+  AUTHT["_auth/tokens.json"]
+  SESS["users/<user_id>/sessions/<session_id>/"]
+  STATE["state.json"]
+  ART["artifacts (FASTQ/FASTA/TSV/etc.)"]
+  LOGS["*.log"]
+  PRESTO["pRESTO tools via subprocess"]
+
+  UB --> UI --> APP
+  UB -->|"fetch + Bearer token"| API --> DATA
+  DATA --> AUTHU
+  DATA --> AUTHT
+  DATA --> SESS --> STATE
+  SESS --> ART
+  SESS --> LOGS --> PRESTO
+
+``````mermaid
+flowchart LR
+  UB["User Browser\n(static pages)"]
+  UI["/ui/*"]
+  APP["FastAPI app\n(app/main.py)\nauth, sessions, upload, run, download, logs"]
+  API["/auth/*, /session/* endpoints"]
+  DATA["/data (volume)"]
+  AUTHU["_auth/users.json"]
+  AUTHT["_auth/tokens.json"]
+  SESS["users/<user_id>/sessions/<session_id>/"]
+  STATE["state.json"]
+  ART["artifacts (FASTQ/FASTA/TSV/etc.)"]
+  LOGS["*.log"]
+  PRESTO["pRESTO tools via subprocess"]
+
+  UB --> UI --> APP
+  UB -->|"fetch + Bearer token"| API --> DATA
+  DATA --> AUTHU
+  DATA --> AUTHT
+  DATA --> SESS --> STATE
+  SESS --> ART
+  SESS --> LOGS --> PRESTO
+
+``````mermaid
+flowchart LR
+  UB["User Browser\n(static pages)"]
+  UI["/ui/*"]
+  APP["FastAPI app\n(app/main.py)\nauth, sessions, upload, run, download, logs"]
+  API["/auth/*, /session/* endpoints"]
+  DATA["/data (volume)"]
+  AUTHU["_auth/users.json"]
+  AUTHT["_auth/tokens.json"]
+  SESS["users/<user_id>/sessions/<session_id>/"]
+  STATE["state.json"]
+  ART["artifacts (FASTQ/FASTA/TSV/etc.)"]
+  LOGS["*.log"]
+  PRESTO["pRESTO tools via subprocess"]
+
+  UB --> UI --> APP
+  UB -->|"fetch + Bearer token"| API --> DATA
+  DATA --> AUTHU
+  DATA --> AUTHT
+  DATA --> SESS --> STATE
+  SESS --> ART
+  SESS --> LOGS --> PRESTO
+
+```

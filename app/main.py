@@ -9,6 +9,7 @@ import csv
 import re
 import threading
 import contextvars
+import time
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Literal, Any
 
@@ -23,7 +24,7 @@ import auth_utils
 
 # --------- sanity: ensure pRESTO tools exist on PATH ----------
 import shutil as _shutil
-_needed = ["FilterSeq.py","MaskPrimers.py","CollapseSeq.py","BuildConsensus.py"]
+_needed = ["FilterSeq.py","MaskPrimers.py","CollapseSeq.py","BuildConsensus.py","PairSeq.py"]
 _missing = [t for t in _needed if not _shutil.which(t)]
 if _missing:
     raise RuntimeError(f"pRESTO tools not found on PATH: {', '.join(_missing)}")
@@ -1215,6 +1216,7 @@ def find_pass_for_prefix(sess_dir: pathlib.Path, prefix: str) -> str:
     for ext in ("fastq.gz","fastq","fasta.gz","fasta"):
         for tag in ("mask-pass","align-primers-pass","primers-pass","extract-pass","score-pass", "quality-pass",
                     "length-pass","missing-pass","repeats-pass","trimqual-pass","maskqual-pass",
+                    "pair-pass",
                     "collapse-unique","collapse-pass","collapse-fail","collapse-failed"):
             p = sess_dir / f"{prefix}_{tag}.{ext}"
             if p.exists(): return p.name
@@ -1828,6 +1830,115 @@ class U_MaskPrimersExtract(UnitSpec):
 
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
 
+class U_PairSeq(UnitSpec):
+    def run(self, sess, sdir, params):
+        idx = _next_idx(sess)
+        log = sdir / f"{idx:03d}_PairSeq.log"
+
+        head_channel = (params.get("head_channel") or "R1").strip().upper()
+        tail_channel = (params.get("tail_channel") or "R2").strip().upper()
+        if head_channel == tail_channel:
+            raise HTTPException(400, "Head/primary and tail/secondary channels must be different.")
+        if head_channel not in ("R1", "R2") or tail_channel not in ("R1", "R2"):
+            raise HTTPException(400, "Head/primary and tail/secondary channels must be R1 or R2.")
+        _assert_channel(sess, head_channel)
+        _assert_channel(sess, tail_channel)
+        seq1 = sdir / sess.artifacts[sess.current[head_channel]].path
+        seq2 = sdir / sess.artifacts[sess.current[tail_channel]].path
+        cmd = ["PairSeq.py", "-1", str(seq1), "-2", str(seq2)]
+
+        if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--failed"]
+        if str(params.get("fasta", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--fasta"]
+        if str(params.get("gzip_output", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--gzip-output"]
+
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+
+        def normalize_fields(value: Any) -> List[str]:
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+            if value in (None, ""):
+                return []
+            return [x.strip() for x in str(value).replace(",", " ").split() if x.strip()]
+
+        def dedupe(values: List[str]) -> List[str]:
+            seen: set[str] = set()
+            out: List[str] = []
+            for val in values:
+                if val and val not in seen:
+                    seen.add(val)
+                    out.append(val)
+            return out
+
+        selected = set(normalize_fields(params.get("annotation_fields")))
+        legacy_1 = dedupe(normalize_fields(params.get("fields_1")))
+        legacy_2 = dedupe(normalize_fields(params.get("fields_2")))
+        default_fields = ["BARCODE", "PRIMER", "MID", "VPRIMER", "CPRIMER", "UMI"]
+
+        fields_1 = legacy_1
+        fields_2 = legacy_2
+        if "1f" in selected and not fields_1:
+            fields_1 = list(default_fields)
+        if "2f" in selected and not fields_2:
+            fields_2 = list(default_fields)
+
+        if fields_1:
+            cmd += ["--1f"] + fields_1
+        if fields_2:
+            cmd += ["--2f"] + fields_2
+
+        act = (params.get("act") or "").strip()
+        if act:
+            allowed = {"min", "max", "sum", "set", "cat"}
+            if act not in allowed:
+                raise HTTPException(400, f"Invalid act value: {act}. Use min,max,sum,set,cat.")
+            cmd += ["--act", act]
+
+        coord = (params.get("coord") or "").strip()
+        if coord:
+            allowed = {"illumina", "solexa", "sra", "454", "presto"}
+            if coord not in allowed:
+                raise HTTPException(400, f"Invalid coord value: {coord}.")
+            cmd += ["--coord", coord]
+
+        start_ts = time.time()
+        run_cmd(cmd, sdir, log)
+
+        candidates = []
+        for entry in sdir.iterdir():
+            if entry.is_file() and "pair-pass" in entry.name:
+                try:
+                    if entry.stat().st_mtime >= (start_ts - 1):
+                        candidates.append(entry)
+                except Exception:
+                    candidates.append(entry)
+        if not candidates:
+            candidates = [p for p in sdir.iterdir() if p.is_file() and "pair-pass" in p.name]
+
+        if not candidates:
+            raise HTTPException(500, "Expected output not found for PairSeq.")
+
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        produced: List[Artifact] = []
+        for idx_out, entry in enumerate(candidates, start=1):
+            rel_path = entry.name
+            kind = _detect_kind_from_name(rel_path) or _detect_kind_from_name(seq1.name) or "fastq"
+            artifact_name = "PAIR" if idx_out == 1 else f"PAIR_{idx_out}"
+            produced.append(Artifact(name=artifact_name, path=rel_path, kind=kind, channel=None, from_step=idx))
+            sess.artifacts[artifact_name] = produced[-1]
+
+        sess.current.pop("R1", None)
+        sess.current.pop("R2", None)
+
+        return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
+
 class U_CollapseSeq(UnitSpec):
     def run(self, sess, sdir, params):
         idx = _next_idx(sess)
@@ -1902,9 +2013,15 @@ class U_CollapseSeq(UnitSpec):
         if copy_fields:
             cmd += ["--cf"] + [x.strip() for x in copy_fields.replace(",", " ").split() if x.strip()]
 
-        act = (params.get("act") or "").strip()
-        if act:
-            actions = [x.strip() for x in act.replace(",", " ").split() if x.strip()]
+        act = params.get("act")
+        actions: List[str] = []
+        if isinstance(act, list):
+            actions = [str(x).strip() for x in act if str(x).strip()]
+        else:
+            act = (act or "").strip()
+            if act:
+                actions = [x.strip() for x in act.replace(",", " ").split() if x.strip()]
+        if actions:
             allowed = {"min", "max", "sum", "set"}
             for item in actions:
                 if item not in allowed:
@@ -2724,6 +2841,28 @@ UNITS: Dict[str, UnitSpec] = {
             "failed":{"type":"checkbox","default":False},
         }
     ),
+    "pair_seq": U_PairSeq(
+        id="pair_seq", label="PairSeq (mate pairing)", requires=["R1","R2"], group="bulk",
+        params_schema={
+            "head_channel":{"type":"select","label":"Head/primary sequences","options":["R1","R2"],"default":"R1"},
+            "tail_channel":{"type":"select","label":"Tail/secondary sequences","options":["R1","R2"],"default":"R2"},
+            "__section_output":{"type":"section","label":"output considerations"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "gzip_output":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "annotation_fields":{
+                "type":"checklist_single",
+                "label":"Annotation fields",
+                "options":[
+                    {"value":"1f","label":"1f","hint":"(copy from file1 to file2)"},
+                    {"value":"2f","label":"2f","hint":"(copy from file2 to file1)"},
+                ],
+            },
+            "act":{"type":"select","label":"Collapse action","options":[{"value":"","label":"(none)"}, "min", "max", "sum", "set", "cat"],"default":""},
+            "coord":{"type":"select","label":"Coordinate format","options":[{"value":"","label":"(none)"}, "illumina", "solexa", "sra", "454", "presto"],"default":""},
+        }
+    ),
     "collapse_seq": U_CollapseSeq(
         id="collapse_seq", label="CollapseSeq (deduplicate)", requires=[], group="bulk",
         params_schema={
@@ -2740,7 +2879,7 @@ UNITS: Dict[str, UnitSpec] = {
             "max_missing":{"type":"int","label":"Max missing","min":0},
             "uniq_fields":{"type":"text","label":"Uniq fields","placeholder":"field1 field2"},
             "copy_fields":{"type":"text","label":"Copy fields","placeholder":"field1 field2"},
-            "act":{"type":"text","placeholder":"min,max,sum,set (comma sep)"},
+            "act":{"type":"multiselect","label":"Collapse action","options":["min", "max", "sum", "set"],"default":[]},
             "inner":{"type":"checkbox","default":False},
             "keepmiss":{"type":"checkbox","default":False},
             "max_field":{"type":"text","label":"Max field","placeholder":"field name"},

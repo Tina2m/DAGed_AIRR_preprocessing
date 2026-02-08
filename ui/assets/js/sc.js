@@ -164,12 +164,8 @@ function extractFirstNumber(text) {
   return Number.isFinite(num) ? num : null;
 }
 
-function parseLogCounts(logText) {
+function parseLogCountsFromLines(lines) {
   const counts = {};
-  if (!logText) {
-    return { pass: null, total: null, counts };
-  }
-  const lines = String(logText).split(/\r?\n/);
   lines.forEach(line => {
     const rowsMatch = line.match(/^\s*Wrote\s+.+\s+rows:\s*([\d,]+)/i);
     if (rowsMatch) {
@@ -198,6 +194,129 @@ function parseLogCounts(logText) {
   return { pass, total, counts };
 }
 
+function parseLogCounts(logText) {
+  if (!logText) {
+    return { pass: null, total: null, counts: {} };
+  }
+  const lines = String(logText).split(/\r?\n/);
+  return parseLogCountsFromLines(lines);
+}
+
+function splitLogRuns(logText) {
+  if (!logText) {
+    return [];
+  }
+  const lines = String(logText).split(/\r?\n/);
+  const runs = [];
+  let current = null;
+  lines.forEach(line => {
+    const match = line.match(/^\[CMD\]\s+(.*)$/);
+    if (match) {
+      current = { cmd: match[1], lines: [] };
+      runs.push(current);
+      return;
+    }
+    if (current) {
+      current.lines.push(line);
+    }
+  });
+  return runs;
+}
+
+function detectChannelFromCmd(cmdLine) {
+  if (!cmdLine) {
+    return null;
+  }
+  const upper = String(cmdLine).toUpperCase();
+  const hasR1 = /\bR1\b|R1[_\.\-]/.test(upper);
+  const hasR2 = /\bR2\b|R2[_\.\-]/.test(upper);
+  if (hasR1 && !hasR2) {
+    return 'R1';
+  }
+  if (hasR2 && !hasR1) {
+    return 'R2';
+  }
+  return null;
+}
+
+function detectChannelFromLine(line) {
+  if (!line) {
+    return null;
+  }
+  const upper = String(line).toUpperCase();
+  const hasR1 = /\bR1\b|R1[_\.\-]/.test(upper);
+  const hasR2 = /\bR2\b|R2[_\.\-]/.test(upper);
+  if (hasR1 && !hasR2) {
+    return 'R1';
+  }
+  if (hasR2 && !hasR1) {
+    return 'R2';
+  }
+  return null;
+}
+
+function detectChannelFromLines(lines) {
+  let found = null;
+  lines.forEach(line => {
+    const channel = detectChannelFromLine(line);
+    if (!channel) {
+      return;
+    }
+    if (!found) {
+      found = channel;
+      return;
+    }
+    if (found !== channel) {
+      found = null;
+    }
+  });
+  return found;
+}
+
+function collectByChannelFromLines(lines) {
+  const byChannelLines = {};
+  let current = null;
+  lines.forEach(line => {
+    const channel = detectChannelFromLine(line);
+    if (channel) {
+      current = channel;
+    }
+    if (current) {
+      if (!byChannelLines[current]) {
+        byChannelLines[current] = [];
+      }
+      byChannelLines[current].push(line);
+    }
+  });
+  const byChannel = {};
+  Object.entries(byChannelLines).forEach(([channel, chanLines]) => {
+    const counts = parseLogCountsFromLines(chanLines);
+    if (counts.pass !== null || counts.total !== null) {
+      byChannel[channel] = counts;
+    }
+  });
+  return byChannel;
+}
+
+function parseLogCountsByChannel(logText) {
+  const runs = splitLogRuns(logText);
+  const byChannel = {};
+  if (runs.length) {
+    runs.forEach(run => {
+      const channel = detectChannelFromCmd(run.cmd) || detectChannelFromLines(run.lines);
+      const counts = parseLogCountsFromLines(run.lines);
+      if (channel) {
+        byChannel[channel] = counts;
+      }
+    });
+  }
+  if (!Object.keys(byChannel).length) {
+    const lines = String(logText || '').split(/\r?\n/);
+    Object.assign(byChannel, collectByChannelFromLines(lines));
+  }
+  return { byChannel, fallback: parseLogCounts(logText) };
+}
+
 async function fetchStepLog(stepIndex) {
   if (!Number.isFinite(stepIndex)) {
     return '';
@@ -213,8 +332,52 @@ async function fetchStepLog(stepIndex) {
   }
 }
 
-function renderFilteringFunnel(mount, rows) {
+function renderFilteringFunnel(mount, rows, channels) {
   mount.innerHTML = '';
+  const funnelChannels = Array.isArray(channels) && channels.length ? channels : ['single'];
+  const isDual = funnelChannels.length > 1;
+
+  const buildBar = (row, value) => {
+    const bar = document.createElement('div');
+    bar.className = `funnel-bar ${row.tone || ''}`.trim();
+    bar.style.setProperty('--funnel-width', `${value.width}%`);
+    bar.title = `${row.label}: ${formatCount(value.count)} (${value.percentLabel})`;
+
+    const val = document.createElement('span');
+    val.className = 'funnel-value';
+    val.textContent = formatCount(value.count);
+
+    const percent = document.createElement('span');
+    percent.className = 'funnel-percent';
+    percent.textContent = value.percentLabel;
+
+    bar.appendChild(val);
+    bar.appendChild(percent);
+    return bar;
+  };
+
+  if (isDual) {
+    const headRow = document.createElement('div');
+    headRow.className = 'funnel-row is-head';
+
+    const headLabel = document.createElement('div');
+    headLabel.className = 'funnel-label';
+    headLabel.textContent = '';
+
+    const headTrack = document.createElement('div');
+    headTrack.className = 'funnel-track is-dual is-head';
+    funnelChannels.forEach(channel => {
+      const head = document.createElement('div');
+      head.className = 'funnel-head';
+      head.textContent = channel;
+      headTrack.appendChild(head);
+    });
+
+    headRow.appendChild(headLabel);
+    headRow.appendChild(headTrack);
+    mount.appendChild(headRow);
+  }
+
   rows.forEach(row => {
     const rowEl = document.createElement('div');
     rowEl.className = `funnel-row${row.isTotal ? ' is-total' : ''}`;
@@ -224,24 +387,30 @@ function renderFilteringFunnel(mount, rows) {
     label.textContent = row.label;
 
     const track = document.createElement('div');
-    track.className = 'funnel-track';
+    track.className = `funnel-track${isDual ? ' is-dual' : ''}`;
 
-    const bar = document.createElement('div');
-    bar.className = `funnel-bar ${row.tone || ''}`.trim();
-    bar.style.setProperty('--funnel-width', `${row.width}%`);
-    bar.title = `${row.label}: ${formatCount(row.count)} (${row.percentLabel})`;
+    if (isDual) {
+      funnelChannels.forEach(channel => {
+        const cell = document.createElement('div');
+        cell.className = 'funnel-cell';
+        const value = row.values?.[channel] || null;
+        if (!value) {
+          const empty = document.createElement('div');
+          empty.className = 'funnel-empty';
+          empty.textContent = '—';
+          cell.appendChild(empty);
+        } else {
+          cell.appendChild(buildBar(row, value));
+        }
+        track.appendChild(cell);
+      });
+    } else {
+      const value = row.values?.[funnelChannels[0]];
+      if (value) {
+        track.appendChild(buildBar(row, value));
+      }
+    }
 
-    const value = document.createElement('span');
-    value.className = 'funnel-value';
-    value.textContent = formatCount(row.count);
-
-    const percent = document.createElement('span');
-    percent.className = 'funnel-percent';
-    percent.textContent = row.percentLabel;
-
-    bar.appendChild(value);
-    bar.appendChild(percent);
-    track.appendChild(bar);
     rowEl.appendChild(label);
     rowEl.appendChild(track);
     mount.appendChild(rowEl);
@@ -265,59 +434,133 @@ function updateFilteringFunnel(state) {
   (async () => {
     const results = await Promise.all(filterSteps.map(async (step) => {
       const logText = await fetchStepLog(step.step_index);
-      return { step, counts: parseLogCounts(logText) };
+      return { step, counts: parseLogCountsByChannel(logText) };
     }));
     if (requestId !== FUNNEL_REQUEST_ID) {
       return;
     }
-    let baseline = null;
-    for (const result of results) {
-      if (result.counts.total && result.counts.total > 0) {
-        baseline = result.counts.total;
-        break;
-      }
-    }
-    if (!baseline) {
-      const firstPass = results.find(result => result.counts.pass && result.counts.pass > 0);
-      baseline = firstPass ? firstPass.counts.pass : 0;
-    }
-    if (!baseline) {
-      mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
-      return;
-    }
-    const rows = [];
-    rows.push({
-      label: 'Total reads',
-      count: baseline,
-      percentLabel: '100%',
-      width: 100,
-      tone: FUNNEL_TONES[0],
-      isTotal: true
+    const hasR1 = results.some(result => {
+      const r1 = result.counts.byChannel?.R1;
+      return r1 && (r1.total || r1.pass);
     });
-    let toneIndex = 1;
-    results.forEach(result => {
-      const pass = result.counts.pass;
-      if (pass === null) {
+    const hasR2 = results.some(result => {
+      const r2 = result.counts.byChannel?.R2;
+      return r2 && (r2.total || r2.pass);
+    });
+    const useDual = hasR1 && hasR2;
+    const channels = useDual ? ['R1', 'R2'] : ['single'];
+
+    const getSingleCounts = (result) => {
+      const r1 = result.counts.byChannel?.R1;
+      if (r1 && (r1.total || r1.pass)) {
+        return r1;
+      }
+      return result.counts.fallback;
+    };
+
+    const findBaseline = (getter) => {
+      for (const result of results) {
+        const counts = getter(result);
+        if (counts?.total && counts.total > 0) {
+          return counts.total;
+        }
+      }
+      for (const result of results) {
+        const counts = getter(result);
+        if (counts?.pass && counts.pass > 0) {
+          return counts.pass;
+        }
+      }
+      return 0;
+    };
+
+    const buildValue = (counts, baseline) => {
+      if (!counts || counts.pass === null || counts.pass === undefined || !baseline) {
+        return null;
+      }
+      const pct = baseline ? (counts.pass / baseline) * 100 : 0;
+      const rounded = Math.round(pct);
+      const percentLabel = (rounded === 0 && counts.pass > 0) ? '<1%' : `${rounded}%`;
+      const width = Math.max(2, Math.min(100, pct));
+      return { count: counts.pass, percentLabel, width };
+    };
+
+    const rows = [];
+    if (useDual) {
+      const baselines = {
+        R1: findBaseline(result => result.counts.byChannel?.R1),
+        R2: findBaseline(result => result.counts.byChannel?.R2)
+      };
+      if (!baselines.R1 && !baselines.R2) {
+        mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
         return;
       }
-      const pct = baseline ? (pass / baseline) * 100 : 0;
-      const rounded = Math.round(pct);
-      const percentLabel = (rounded === 0 && pass > 0) ? '<1%' : `${rounded}%`;
-      const width = Math.max(2, Math.min(100, pct));
       rows.push({
-        label: getUnitLabel(result.step.unit || ''),
-        count: pass,
-        percentLabel,
-        width,
-        tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length]
+        label: 'Total reads',
+        values: {
+          R1: baselines.R1 ? { count: baselines.R1, percentLabel: '100%', width: 100 } : null,
+          R2: baselines.R2 ? { count: baselines.R2, percentLabel: '100%', width: 100 } : null
+        },
+        tone: FUNNEL_TONES[0],
+        isTotal: true
       });
-      toneIndex += 1;
-    });
+      let toneIndex = 1;
+      results.forEach(result => {
+        const rowValues = {};
+        let hasAny = false;
+        channels.forEach(channel => {
+          const value = buildValue(result.counts.byChannel?.[channel], baselines[channel]);
+          if (value) {
+            rowValues[channel] = value;
+            hasAny = true;
+          } else {
+            rowValues[channel] = null;
+          }
+        });
+        if (!hasAny) {
+          return;
+        }
+        rows.push({
+          label: getUnitLabel(result.step.unit || ''),
+          values: rowValues,
+          tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length]
+        });
+        toneIndex += 1;
+      });
+    } else {
+      const baseline = findBaseline(getSingleCounts);
+      if (!baseline) {
+        mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
+        return;
+      }
+      rows.push({
+        label: 'Total reads',
+        values: {
+          single: { count: baseline, percentLabel: '100%', width: 100 }
+        },
+        tone: FUNNEL_TONES[0],
+        isTotal: true
+      });
+      let toneIndex = 1;
+      results.forEach(result => {
+        const value = buildValue(getSingleCounts(result), baseline);
+        if (!value) {
+          return;
+        }
+        rows.push({
+          label: getUnitLabel(result.step.unit || ''),
+          values: { single: value },
+          tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length]
+        });
+        toneIndex += 1;
+      });
+    }
+
     if (rows.length <= 1) {
       mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
       return;
     }
-    renderFilteringFunnel(mount, rows);
+    renderFilteringFunnel(mount, rows, channels);
   })().catch(() => {
     mount.innerHTML = '<div class="muted">Unable to load read stats.</div>';
   });
