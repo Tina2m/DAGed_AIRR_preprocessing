@@ -3137,7 +3137,7 @@ UNITS: Dict[str, UnitSpec] = {
             "primer_field":{"type":"text","label":"Primer field","placeholder":"PRIMER"},
             "primer_freq":{"type":"text","placeholder":"e.g. 0.7"},
             "copy_fields":{"type":"text","placeholder":"field1 field2"},
-            "act":{"type":"text","placeholder":"min,max,sum,set,majority (comma sep)"},
+            "act":{"type":"select","label":"act","options":[{"value":"","label":"(none)"}, "min", "max", "sum", "set", "majority"],"default":""},
             "dep":{"type":"checkbox","default":False},
             "maxdiv":{"type":"text","placeholder":"e.g. 0.05"},
             "maxerror":{"type":"text","placeholder":"e.g. 0.05"},
