@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="page" content="docs">
-  <title>Documents · ImmunoStream</title>
+  <title>Documentation - ImmunoStream</title>
 
   <!-- Shared nav/header -->
   <link rel="stylesheet" href="assets/css/nav.css?v=20250320">
@@ -17,76 +17,372 @@
       --accent:#2563eb; --accent2:#60a5fa; --shadow:0 10px 30px rgba(2,6,23,.06);
     }
     *{box-sizing:border-box}
-    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:linear-gradient(180deg,#f8fafc 0%, #f1f5f9 100%);color:var(--text)}
-    a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
-    .wrap{max-width:1100px;margin:0 auto;padding:24px}
-    .page-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
-    h1{font-size:22px;margin:0}
+    body{
+      margin:0;
+      font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      background:linear-gradient(180deg,#f8fafc 0%, #f1f5f9 100%);
+      color:var(--text)
+    }
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline}
+    .wrap{max-width:1200px;margin:0 auto;padding:24px}
+    .page-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+    h1{font-size:24px;margin:0}
     .muted{color:var(--muted)}
-    .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:18px;margin-top:18px}
-    .card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:20px;box-shadow:var(--shadow)}
-    .card h2{margin:0 0 6px 0;font-size:19px}
-    .card p{margin:6px 0 14px 0;color:var(--muted)}
-    .btn{display:inline-block;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 14px;cursor:pointer;text-decoration:none}
+    .layout{display:grid;grid-template-columns:minmax(220px, 260px) minmax(0,1fr);gap:22px;align-items:start}
+    .toc{
+      position:sticky;
+      top:16px;
+      background:var(--panel);
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:16px;
+      box-shadow:var(--shadow)
+    }
+    .toc h2{margin:0 0 8px 0;font-size:16px}
+    .toc ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+    .toc a{color:var(--text)}
+    .content{display:flex;flex-direction:column;gap:18px}
+    .section{
+      background:var(--panel);
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:20px;
+      box-shadow:var(--shadow)
+    }
+    .section h2{margin:0 0 10px 0;font-size:20px}
+    .section h3{margin:16px 0 8px 0;font-size:16px}
+    .section h4{margin:14px 0 6px 0;font-size:15px}
+    .section p{margin:0 0 10px 0;color:var(--text)}
+    .section ul{margin:6px 0 0 18px;padding:0}
+    .callout{
+      background:#eef2ff;
+      border:1px solid #c7d2fe;
+      color:#1e293b;
+      border-radius:12px;
+      padding:12px 14px;
+      margin-top:8px
+    }
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:14px}
+    .unit{
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:12px;
+      background:#fff
+    }
+    .step-row{
+      display:grid;
+      grid-template-columns:minmax(0,1fr) minmax(220px, 360px);
+      gap:16px;
+      align-items:start;
+      padding:10px 0;
+      border-top:1px dashed var(--border)
+    }
+    .step-row:first-of-type{border-top:none}
+    .step-media img{
+      width:100%;
+      display:block;
+      border-radius:12px;
+      border:1px solid var(--border);
+      box-shadow:var(--shadow)
+    }
+    .step-stack{display:grid;gap:8px}
+    .unit p{margin:4px 0;color:var(--muted)}
+    .params{font-size:13px;color:var(--muted)}
+    .pill{
+      display:inline-block;
+      border:1px solid var(--border);
+      border-radius:999px;
+      padding:2px 8px;
+      font-size:12px;
+      background:#fff;
+      margin-right:6px
+    }
+    .btn{
+      display:inline-block;
+      background:var(--accent);
+      color:#fff;
+      border:none;
+      border-radius:10px;
+      padding:8px 12px;
+      cursor:pointer;
+      text-decoration:none
+    }
     .btn.secondary{background:#eef2ff;color:#0f172a;border:1px solid var(--border)}
-    .icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:#eff6ff;border:1px solid var(--border);margin-bottom:10px}
-    .icon svg{width:22px;height:22px}
+    @media (max-width:960px){
+      .layout{grid-template-columns:1fr}
+      .toc{position:static}
+    }
+    @media (max-width:900px){
+      .step-row{grid-template-columns:1fr}
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header class="page-head">
-      <h1>Documents</h1>
-      <div class="muted">Guides & references for ImmunoStream</div>
+      <div>
+        <h1>Documentation</h1>
+        <div class="muted">Tutorial and reference guide for ImmunoStream.</div>
+      </div>
+      <div>
+        <a class="btn secondary" href="/ui/">Back to Home</a>
+      </div>
     </header>
 
-    <div class="grid">
-      <div class="card">
-        <div class="icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path d="M6 4h9l3 3v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" stroke-width="1.6"/>
-            <path d="M9 13h6M9 17h6M9 9h3" stroke-width="1.6"/>
-          </svg>
-        </div>
-        <h2>Bulk amplicon guide</h2>
-        <p>Overview of the click‑to‑run pRESTO pipeline: uploads, units, validation, and artifacts.</p>
-        <div><a class="btn" href="blk.html">Open bulk page</a></div>
-      </div>
+    <div class="layout">
+      <nav class="toc" aria-label="Table of contents">
+        <h2>Contents</h2>
+        <ul>
+          <li><a href="#overview">Overview</a></li>
+          <li><a href="#account">Create Account and Login</a></li>
+          <li><a href="#bulk">Bulk Tutorial</a></li>
+          <li><a href="#bulk-units">Bulk Units Reference</a></li>
+          <li><a href="#sc">Single-Cell Tutorial</a></li>
+          <li><a href="#sc-units">Single-Cell Units Reference</a></li>
+          <li><a href="#example">Example Bulk Run</a></li>
+        </ul>
+      </nav>
 
-      <div class="card">
-        <div class="icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <circle cx="12" cy="12" r="9" stroke-width="1.6"/>
-            <path d="M8 12h8M12 8v8" stroke-width="1.6"/>
-          </svg>
-        </div>
-        <h2>Single‑Cell AIRR guide</h2>
-        <p>Upload AIRR TSV/TSV.GZ tables and build flows for filtering and QC. Step descriptions and tips.</p>
-        <div><a class="btn" href="sc.html">Open single‑cell page</a></div>
-      </div>
+      <main class="content">
+        <section id="overview" class="section">
+          <h2>Overview</h2>
+          <p>ImmunoStream is a web workbench for AIRR data preprocessing. Use it to build a click-ordered pipeline for bulk amplicon FASTQ data or for single-cell AIRR TSV tables.</p>
+          <div class="callout">
+            <strong>Tip:</strong> You must sign in before using the Bulk or Single-Cell pages.
+          </div>
+        </section>
 
-      <div class="card">
-        <div class="icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path d="M4 7h16M4 12h16M4 17h16" stroke-width="1.6"/>
-          </svg>
-        </div>
-        <h2>File formats</h2>
-        <p>Notes on supported inputs and outputs (FASTQ/FASTA, AIRR TSV), and how gzipped files are handled.</p>
-        <div><a class="btn secondary" href="https://docs.airr-community.org/en/stable/datarep/rearrangements.html" target="_blank" rel="noreferrer">AIRR spec</a></div>
-      </div>
+        <section id="account" class="section">
+          <h2>Create Account and Login</h2>
+          <p>Go to the Login page to create an account or sign in.</p>
+          <ul>
+            <li>Create account: enter a username and a password (minimum 6 characters).</li>
+            <li>Sign in: use the same credentials to access your sessions and history.</li>
+          </ul>
+          <div class="callout">
+            <strong>Note:</strong> The login token is stored in your browser to keep runs linked to your user.
+          </div>
+        </section>
 
-      <div class="card">
-        <div class="icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path d="M12 3l9 6-9 6-9-6 9-6z" stroke-width="1.6"/>
-            <path d="M3 15l9 6 9-6" stroke-width="1.6"/>
-          </svg>
-        </div>
-        <h2>FAQ & troubleshooting</h2>
-        <p>Common upload issues, tips for primers and assembly, and where logs are stored.</p>
-        <div><a class="btn secondary" href="#" onclick="alert('Add your FAQ here.');return false;">Read FAQ</a></div>
-      </div>
+        <section id="bulk" class="section">
+          <h2>Bulk Tutorial (pRESTO)</h2>
+          <div class="step-row">
+            <div class="step-text">
+              <h3>1. Upload reads</h3>
+              <ul>
+                <li>Upload <span class="pill">R1 FASTQ(.gz)</span> (required).</li>
+                <li>Upload <span class="pill">R2 FASTQ(.gz)</span> (optional, for paired-end pipelines).</li>
+              </ul>
+            </div>
+            <div class="step-media">
+              <img src="assets/img/docs/Upload_reads.png" alt="Bulk upload reads panel">
+            </div>
+          </div>
+          <div class="step-row">
+            <div class="step-text">
+              <h3>2. Upload aux files (primers/reference)</h3>
+              <ul>
+                <li>Upload primer FASTA files for MaskPrimers.</li>
+                <li>If you leave "Store as" empty, the filename is used.</li>
+              </ul>
+            </div>
+            <div class="step-media">
+              <img src="assets/img/docs/Upload_aux_files.png" alt="Bulk upload aux files panel">
+            </div>
+          </div>
+          <div class="step-row">
+            <div class="step-text">
+              <h3>3. Add units to the flow</h3>
+              <ul>
+                <li>Use the Units search bar to find tools quickly.</li>
+                <li>Click <span class="pill">Add to pipeline</span> to build your flow. Order follows your clicks.</li>
+              </ul>
+            </div>
+            <div class="step-media">
+              <img src="assets/img/docs/Add_units_to_flow.png" alt="Bulk units and flow builder">
+            </div>
+          </div>
+          <div class="step-row">
+            <div class="step-text">
+              <h3>4. Validate and run</h3>
+              <ul>
+                <li>Click <span class="pill">Validate</span> to check primer dependencies and BARCODE usage.</li>
+                <li>Click <span class="pill">Run pipeline</span> to execute.</li>
+                <li>Run modes: <strong>Continue from changes</strong> appends new steps, <strong>Run from beginning</strong> resets.</li>
+              </ul>
+            </div>
+            <div class="step-media">
+              <img src="assets/img/docs/Validate_run.png" alt="Bulk validate and run controls">
+            </div>
+          </div>
+          <div class="step-row">
+            <div class="step-text">
+              <h3>5. Review outputs</h3>
+              <ul>
+                <li><strong>State</strong> shows current channels (R1/R2).</li>
+                <li><strong>Log</strong> shows the last command output.</li>
+                <li><strong>Artifacts</strong> provides download links.</li>
+                <li><strong>Read statistics</strong> and <strong>QC plots</strong> visualize filtering impact.</li>
+              </ul>
+            </div>
+            <div class="step-media">
+              <div class="step-stack">
+                <img src="assets/img/docs/artifacts.png" alt="Artifacts list">
+                <img src="assets/img/docs/statistics.png" alt="Read statistics view">
+                <img src="assets/img/docs/plots.png" alt="QC plots view">
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="bulk-units" class="section">
+          <h2>Bulk Units Reference</h2>
+
+          <h3>Filtering and Quality Control</h3>
+          <div class="grid">
+            <div class="unit">
+              <h4>FilterSeq: quality</h4>
+              <p>Removes low-quality reads and produces QC plots.</p>
+              <div class="params">Key params: <span class="pill">qmin</span></div>
+            </div>
+            <div class="unit">
+              <h4>FilterSeq: length</h4>
+              <p>Filters reads below a minimum length.</p>
+              <div class="params">Key params: <span class="pill">min_len</span> <span class="pill">inner</span></div>
+            </div>
+            <div class="unit">
+              <h4>FilterSeq: missing</h4>
+              <p>Removes reads with too many missing bases.</p>
+              <div class="params">Key params: <span class="pill">max_missing</span> <span class="pill">inner</span></div>
+            </div>
+            <div class="unit">
+              <h4>FilterSeq: repeats</h4>
+              <p>Filters low-complexity or homopolymer-rich reads.</p>
+              <div class="params">Key params: <span class="pill">max_repeat</span> <span class="pill">missing</span> <span class="pill">inner</span></div>
+            </div>
+            <div class="unit">
+              <h4>FilterSeq: trimqual</h4>
+              <p>Trims low-quality ends by sliding window.</p>
+              <div class="params">Key params: <span class="pill">qmin</span> <span class="pill">window</span> <span class="pill">reverse</span></div>
+            </div>
+            <div class="unit">
+              <h4>FilterSeq: maskqual</h4>
+              <p>Masks low-quality bases instead of removing reads.</p>
+              <div class="params">Key params: <span class="pill">qmin</span></div>
+            </div>
+          </div>
+
+          <h3>Technical processing (Primers)</h3>
+          <div class="grid">
+            <div class="unit">
+              <h4>MaskPrimers: score</h4>
+              <p>Primer matching by score. Fast and practical.</p>
+              <div class="params">Key params: <span class="pill">primer_fname</span> <span class="pill">mode</span> <span class="pill">max_error</span> <span class="pill">barcode</span></div>
+            </div>
+            <div class="unit">
+              <h4>MaskPrimers: align</h4>
+              <p>Primer matching by alignment. Most sensitive.</p>
+              <div class="params">Key params: <span class="pill">primer_fname</span> <span class="pill">mode</span> <span class="pill">max_error</span> <span class="pill">gap</span></div>
+            </div>
+            <div class="unit">
+              <h4>MaskPrimers: extract</h4>
+              <p>Extracts a fixed-length region after primers.</p>
+              <div class="params">Key params: <span class="pill">length</span> <span class="pill">mode</span> <span class="pill">barcode</span></div>
+            </div>
+          </div>
+
+          <h3>Pairing and Merge</h3>
+          <div class="grid">
+            <div class="unit">
+              <h4>PairSeq (mate pairing)</h4>
+              <p>Pairs R1 and R2 reads and copies annotations if requested.</p>
+              <div class="params">Key params: <span class="pill">head_channel</span> <span class="pill">tail_channel</span> <span class="pill">annotation_fields</span></div>
+            </div>
+          </div>
+
+          <h3>Clustering and Consensus</h3>
+          <div class="grid">
+            <div class="unit">
+              <h4>CollapseSeq (deduplicate)</h4>
+              <p>Deduplicates reads using fields such as BARCODE or UMI.</p>
+              <div class="params">Key params: <span class="pill">outname</span> <span class="pill">uniq_fields</span> <span class="pill">copy_fields</span> <span class="pill">act</span></div>
+            </div>
+            <div class="unit">
+              <h4>BuildConsensus</h4>
+              <p>Builds consensus reads from read families.</p>
+              <div class="params">Key params: <span class="pill">min_count</span> <span class="pill">barcode_field</span> <span class="pill">qmin</span> <span class="pill">maxerror</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="sc" class="section">
+          <h2>Single-Cell Tutorial</h2>
+          <h3>1. Upload AIRR TSVs</h3>
+          <ul>
+            <li>Upload one or more <span class="pill">TSV</span> or <span class="pill">TSV.GZ</span> files.</li>
+            <li>A session starts automatically after upload.</li>
+          </ul>
+          <h3>2. Add units to the flow</h3>
+          <ul>
+            <li>Units are grouped into I/O and Merge, QC and Filtering, and Other.</li>
+            <li>Use <span class="pill">Add to pipeline</span>; order follows your clicks.</li>
+          </ul>
+          <h3>3. Run and review</h3>
+          <ul>
+            <li>Validate the flow, then run.</li>
+            <li>Review state, logs, artifacts, QC plots, and read stats.</li>
+          </ul>
+        </section>
+
+        <section id="sc-units" class="section">
+          <h2>Single-Cell Units Reference</h2>
+
+          <h3>I/O and Merge</h3>
+          <div class="grid">
+            <div class="unit">
+              <h4>Merge samples (AIRR TSV)</h4>
+              <p>Merges multiple TSVs into a single table.</p>
+              <div class="params">Key params: <span class="pill">files</span> <span class="pill">aux_types</span> <span class="pill">sample_field</span></div>
+            </div>
+          </div>
+
+          <h3>QC and Filtering</h3>
+          <div class="grid">
+            <div class="unit">
+              <h4>Keep productive sequences</h4>
+              <p>Removes non-productive sequences; can fall back to AIRR fields.</p>
+              <div class="params">Key params: <span class="pill">productive_field</span> <span class="pill">fallback_from_airr</span> <span class="pill">mode</span></div>
+            </div>
+            <div class="unit">
+              <h4>Remove cells with multiple heavy chains</h4>
+              <p>Filters cells that have more than one heavy chain.</p>
+              <div class="params">Key params: <span class="pill">locus_field</span> <span class="pill">heavy_value</span> <span class="pill">cell_field</span></div>
+            </div>
+            <div class="unit">
+              <h4>Remove cells without heavy chains</h4>
+              <p>Filters cells that only contain light chains.</p>
+              <div class="params">Key params: <span class="pill">locus_field</span> <span class="pill">heavy_value</span> <span class="pill">light_values</span> <span class="pill">cell_field</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="example" class="section">
+          <h2>Example Bulk Run</h2>
+          <ol>
+            <li>Upload <strong>R1.fastq.gz</strong> and <strong>R2.fastq.gz</strong>.</li>
+            <li>Upload <strong>V_primers.fasta</strong> in the aux section.</li>
+            <li>Add <strong>FilterSeq: quality</strong> (qmin = 20).</li>
+            <li>Add <strong>FilterSeq: length</strong> (min_len = 150).</li>
+            <li>Add <strong>MaskPrimers: align</strong> (primer_fname = V_primers.fasta, mode = mask, max_error = 0.1).</li>
+            <li>Add <strong>PairSeq</strong> (head = R1, tail = R2).</li>
+            <li>Add <strong>CollapseSeq</strong> (uniq_fields = BARCODE).</li>
+            <li>Add <strong>BuildConsensus</strong> (min_count = 2, barcode_field = true).</li>
+            <li>Validate, then Run pipeline.</li>
+            <li>Download outputs from the Artifacts panel.</li>
+          </ol>
+        </section>
+      </main>
     </div>
   </div>
 </body>
