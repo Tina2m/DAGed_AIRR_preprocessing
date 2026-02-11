@@ -1278,12 +1278,23 @@ async function runFlow(modeOverride) {
     alert('Please fix flow issues and try again.');
     return;
   }
-  const runPlan = buildScRunPlan(FLOW, modeOverride);
+  const mode = modeOverride === 'restart' || modeOverride === 'continue'
+    ? modeOverride
+    : getFlowRunMode();
+  const runPlan = buildScRunPlan(FLOW, mode);
   if (runPlan.error) {
     $('#pstate').textContent = 'cannot continue from changed middle steps';
     setPipelineProgress(0, runPlan.error);
     alert(runPlan.error);
     return;
+  }
+  if (mode === 'restart') {
+    const resetOk = await resetSessionState();
+    if (!resetOk) {
+      $('#pstate').textContent = 'reset failed';
+      setPipelineProgress(0, 'Reset failed');
+      return;
+    }
   }
   const totalSteps = FLOW.length;
   const stepsLabel = `step${totalSteps === 1 ? '' : 's'}`;
@@ -1496,6 +1507,36 @@ async function refreshState() {
   const response = await apiFetch(`/session/${SID}/state`);
   const state = await response.json();
   applyStateSnapshot(state);
+}
+
+async function resetSessionState() {
+  if (!SID) {
+    return false;
+  }
+  try {
+    const response = await apiFetch(`/session/${SID}/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delete_files: true })
+    });
+    if (!response.ok) {
+      let message = response.statusText || 'Reset failed';
+      try {
+        const data = await response.json();
+        message = data?.detail?.error || data?.detail || message;
+      } catch (err) {
+        // ignore
+      }
+      alert(message);
+      return false;
+    }
+    await refreshState();
+    await loadHistory();
+    return true;
+  } catch (err) {
+    alert('Reset failed. Please try again.');
+    return false;
+  }
 }
 
 function collectUploadedItems(state) {
