@@ -87,6 +87,23 @@
       box-shadow:var(--shadow)
     }
     .step-stack{display:grid;gap:8px}
+    .step-table{
+      width:100%;
+      border-collapse:collapse;
+      margin-top:12px;
+      font-size:14px
+    }
+    .step-table th,
+    .step-table td{
+      text-align:left;
+      vertical-align:top;
+      padding:10px 12px;
+      border:1px solid var(--border)
+    }
+    .step-table th{
+      background:#f8fafc;
+      font-weight:600
+    }
     .unit p{margin:4px 0;color:var(--muted)}
     .params{font-size:13px;color:var(--muted)}
     .pill{
@@ -135,45 +152,63 @@
         <h2>Contents</h2>
         <ul>
           <li><a href="#overview">Overview</a></li>
-          <li><a href="#account">Create Account and Login</a></li>
-          <li><a href="#bulk">Bulk Tutorial</a></li>
+          <li><a href="#account">Account Creation and Login</a></li>
+          <li><a href="#bulk">Bulk Tutorial (pRESTO Workflow)</a></li>
           <li><a href="#bulk-units">Bulk Units Reference</a></li>
           <li><a href="#sc">Single-Cell Tutorial</a></li>
           <li><a href="#sc-units">Single-Cell Units Reference</a></li>
-          <li><a href="#example">Example Bulk Run</a></li>
+          <li><a href="#pipeline">Step-by-Step Pipeline</a></li>
+          <li><a href="#flow">Conceptual Flow</a></li>
         </ul>
       </nav>
 
       <main class="content">
         <section id="overview" class="section">
           <h2>Overview</h2>
-          <p>ImmunoStream is a web workbench for AIRR data preprocessing. Use it to build a click-ordered pipeline for bulk amplicon FASTQ data or for single-cell AIRR TSV tables.</p>
+          <p>ImmunoStream is a web-based workbench for preprocessing Adaptive Immune Receptor Repertoire (AIRR) data.</p>
+          <p>It allows users to construct an ordered, click-based preprocessing pipeline for:</p>
+          <ul>
+            <li>Bulk amplicon sequencing data (FASTQ format)</li>
+            <li>Single-cell AIRR data (TSV format)</li>
+          </ul>
+          <p>The interface guides users through sequential preprocessing steps while preserving reproducibility and session history.</p>
           <div class="callout">
-            <strong>Tip:</strong> You must sign in before using the Bulk or Single-Cell pages.
+            <strong>Important:</strong> You must sign in before accessing the Bulk or Single-Cell workflows.
           </div>
         </section>
 
         <section id="account" class="section">
-          <h2>Create Account and Login</h2>
-          <p>Go to the Login page to create an account or sign in.</p>
+          <h2>Account Creation and Login</h2>
+          <p>Access the Login page to create an account or sign in.</p>
+          <h3>Create an Account</h3>
           <ul>
-            <li>Create account: enter a username and a password (minimum 6 characters).</li>
-            <li>Sign in: use the same credentials to access your sessions and history.</li>
+            <li>Provide a username</li>
+            <li>Choose a password (minimum 6 characters)</li>
+          </ul>
+          <h3>Sign In</h3>
+          <p>Use your registered credentials to access:</p>
+          <ul>
+            <li>Saved sessions</li>
+            <li>Pipeline history</li>
+            <li>Previously generated outputs</li>
           </ul>
           <div class="callout">
-            <strong>Note:</strong> The login token is stored in your browser to keep runs linked to your user.
+            <strong>Technical Note:</strong> A secure login token is stored locally in your browser to associate preprocessing runs with your user account. No credentials are stored in plaintext.
           </div>
         </section>
 
         <section id="bulk" class="section">
-          <h2>Bulk Tutorial (pRESTO)</h2>
+          <h2>Bulk Tutorial (pRESTO Workflow)</h2>
+          <p>This workflow is designed for preprocessing bulk amplicon AIRR sequencing data using pRESTO-based modules.</p>
           <div class="step-row">
             <div class="step-text">
               <h3>1. Upload reads</h3>
+              <p>Upload your raw sequencing files:</p>
               <ul>
-                <li>Upload <span class="pill">R1 FASTQ(.gz)</span> (required).</li>
-                <li>Upload <span class="pill">R2 FASTQ(.gz)</span> (optional, for paired-end pipelines).</li>
+                <li>R1 FASTQ (.gz) - required</li>
+                <li>R2 FASTQ (.gz) - optional (for paired-end pipelines)</li>
               </ul>
+              <p>Compressed FASTQ files (.fastq.gz) are supported and recommended.</p>
             </div>
             <div class="step-media">
               <img src="assets/img/docs/Upload_reads.png" alt="Bulk upload reads panel">
@@ -181,11 +216,15 @@
           </div>
           <div class="step-row">
             <div class="step-text">
-              <h3>2. Upload aux files (primers/reference)</h3>
+              <h3>2. Upload Auxiliary Files (Primers / References)</h3>
+              <p>Upload required auxiliary files before adding dependent units to the pipeline.</p>
+              <p>Typical inputs include:</p>
               <ul>
-                <li>Upload primer FASTA files for MaskPrimers.</li>
-                <li>If you leave "Store as" empty, the filename is used.</li>
+                <li>Primer FASTA files (for MaskPrimers)</li>
+                <li>Reference FASTA files (if required by selected units)</li>
               </ul>
+              <p>If the "Store as" field is left empty, the original filename will be used internally.</p>
+              <p>Ensure that primer files are consistent with your experimental design (5' / 3' orientation and expected binding positions).</p>
             </div>
             <div class="step-media">
               <img src="assets/img/docs/Upload_aux_files.png" alt="Bulk upload aux files panel">
@@ -193,11 +232,14 @@
           </div>
           <div class="step-row">
             <div class="step-text">
-              <h3>3. Add units to the flow</h3>
+              <h3>3. Add Units to the Pipeline</h3>
+              <p>Construct your preprocessing flow using modular units.</p>
               <ul>
-                <li>Use the Units search bar to find tools quickly.</li>
-                <li>Click <span class="pill">Add to pipeline</span> to build your flow. Order follows your clicks.</li>
+                <li>Use the Units search bar to locate tools.</li>
+                <li>Click Add to pipeline to append a unit.</li>
+                <li>Units are executed in the exact order they are added.</li>
               </ul>
+              <p>The flow is explicitly ordered and reflects your click sequence, enabling reproducible preprocessing configurations.</p>
             </div>
             <div class="step-media">
               <img src="assets/img/docs/Add_units_to_flow.png" alt="Bulk units and flow builder">
@@ -205,12 +247,23 @@
           </div>
           <div class="step-row">
             <div class="step-text">
-              <h3>4. Validate and run</h3>
+              <h3>4. Validate and Run</h3>
+              <h4>Validation</h4>
+              <p>Click Validate to check:</p>
               <ul>
-                <li>Click <span class="pill">Validate</span> to check primer dependencies and BARCODE usage.</li>
-                <li>Click <span class="pill">Run pipeline</span> to execute.</li>
-                <li>Run modes: <strong>Continue from changes</strong> appends new steps, <strong>Run from beginning</strong> resets.</li>
+                <li>Primer file dependencies</li>
+                <li>BARCODE usage and compatibility</li>
+                <li>Required inputs for selected units</li>
               </ul>
+              <p>Validation ensures that all mandatory upstream resources are available before execution.</p>
+              <h4>Execution</h4>
+              <p>Click Run pipeline to start processing.</p>
+              <p>Available run modes:</p>
+              <ul>
+                <li><strong>Continue from changes</strong><br>Appends newly added steps without rerunning previous units.</li>
+                <li><strong>Run from beginning</strong><br>Resets the workflow and executes the full pipeline from the first unit.</li>
+              </ul>
+              <p>Choose the mode according to whether upstream modifications were introduced.</p>
             </div>
             <div class="step-media">
               <img src="assets/img/docs/Validate_run.png" alt="Bulk validate and run controls">
@@ -218,13 +271,16 @@
           </div>
           <div class="step-row">
             <div class="step-text">
-              <h3>5. Review outputs</h3>
+              <h3>5. Review Outputs</h3>
+              <p>After execution, results can be inspected through multiple panels:</p>
               <ul>
-                <li><strong>State</strong> shows current channels (R1/R2).</li>
-                <li><strong>Log</strong> shows the last command output.</li>
-                <li><strong>Artifacts</strong> provides download links.</li>
-                <li><strong>Read statistics</strong> and <strong>QC plots</strong> visualize filtering impact.</li>
+                <li><strong>State</strong><br>Displays current data channels (R1 / R2) and their status.</li>
+                <li><strong>Log</strong><br>Shows the most recent command-line output for transparency and debugging.</li>
+                <li><strong>Artifacts</strong><br>Provides downloadable output files generated by each unit.</li>
+                <li><strong>Read Statistics</strong><br>Summarizes filtering impact across steps.</li>
+                <li><strong>QC Plots</strong><br>Visualizes read retention, trimming, and quality evolution across the pipeline.</li>
               </ul>
+              <p>These outputs allow users to evaluate preprocessing efficiency and track data loss across sequential steps.</p>
             </div>
             <div class="step-media">
               <div class="step-stack">
@@ -238,149 +294,265 @@
 
         <section id="bulk-units" class="section">
           <h2>Bulk Units Reference</h2>
+          <p>This section describes the available preprocessing units in the Bulk (pRESTO-based) workflow. Units are organized by functional category.</p>
 
           <h3>Filtering and Quality Control</h3>
           <div class="grid">
             <div class="unit">
               <h4>FilterSeq: quality</h4>
-              <p>Removes low-quality reads and produces QC plots.</p>
-              <div class="params">Key params: <span class="pill">qmin</span></div>
+              <p>Removes reads failing a minimum base quality threshold and generates QC plots.</p>
+              <p><strong>Purpose:</strong> eliminate globally low-quality reads before downstream processing.</p>
+              <div class="params">Key parameter: <span class="pill">qmin</span> minimum acceptable Phred quality score.</div>
             </div>
             <div class="unit">
               <h4>FilterSeq: length</h4>
-              <p>Filters reads below a minimum length.</p>
-              <div class="params">Key params: <span class="pill">min_len</span> <span class="pill">inner</span></div>
+              <p>Removes reads shorter than a specified minimum length.</p>
+              <p><strong>Purpose:</strong> ensure sufficient sequence length for reliable primer detection and downstream annotation.</p>
+              <div class="params">Key parameters: <span class="pill">min_len</span> minimum read length, <span class="pill">inner</span> apply filtering to inner region only (if enabled).</div>
             </div>
             <div class="unit">
               <h4>FilterSeq: missing</h4>
-              <p>Removes reads with too many missing bases.</p>
-              <div class="params">Key params: <span class="pill">max_missing</span> <span class="pill">inner</span></div>
+              <p>Removes reads containing excessive ambiguous bases (e.g., N).</p>
+              <p><strong>Purpose:</strong> eliminate reads with unreliable base calls.</p>
+              <div class="params">Key parameters: <span class="pill">max_missing</span> maximum allowed number of ambiguous bases, <span class="pill">inner</span> apply constraint to inner region only.</div>
             </div>
             <div class="unit">
               <h4>FilterSeq: repeats</h4>
-              <p>Filters low-complexity or homopolymer-rich reads.</p>
-              <div class="params">Key params: <span class="pill">max_repeat</span> <span class="pill">missing</span> <span class="pill">inner</span></div>
+              <p>Filters low-complexity reads (e.g., homopolymer-rich sequences).</p>
+              <p><strong>Purpose:</strong> remove sequencing artifacts and non-informative reads.</p>
+              <div class="params">Key parameters: <span class="pill">max_repeat</span> maximum allowed homopolymer length, <span class="pill">missing</span> treat ambiguous bases as repeats (if enabled), <span class="pill">inner</span> apply to inner region only.</div>
             </div>
             <div class="unit">
               <h4>FilterSeq: trimqual</h4>
-              <p>Trims low-quality ends by sliding window.</p>
-              <div class="params">Key params: <span class="pill">qmin</span> <span class="pill">window</span> <span class="pill">reverse</span></div>
+              <p>Trims low-quality ends using a sliding-window approach.</p>
+              <p><strong>Purpose:</strong> retain high-quality core regions while removing noisy read termini.</p>
+              <div class="params">Key parameters: <span class="pill">qmin</span> minimum average quality in window, <span class="pill">window</span> sliding window size, <span class="pill">reverse</span> apply trimming from 3' end if enabled.</div>
             </div>
             <div class="unit">
               <h4>FilterSeq: maskqual</h4>
-              <p>Masks low-quality bases instead of removing reads.</p>
-              <div class="params">Key params: <span class="pill">qmin</span></div>
+              <p>Masks low-quality bases (e.g., replacing with N) instead of removing entire reads.</p>
+              <p><strong>Purpose:</strong> preserve read count while marking unreliable positions.</p>
+              <div class="params">Key parameter: <span class="pill">qmin</span> masking threshold.</div>
             </div>
           </div>
 
-          <h3>Technical processing (Primers)</h3>
+          <h3>Primer Processing</h3>
           <div class="grid">
             <div class="unit">
               <h4>MaskPrimers: score</h4>
-              <p>Primer matching by score. Fast and practical.</p>
-              <div class="params">Key params: <span class="pill">primer_fname</span> <span class="pill">mode</span> <span class="pill">max_error</span> <span class="pill">barcode</span></div>
+              <p>Detects and masks primers using score-based matching.</p>
+              <p><strong>Characteristics:</strong> fast, suitable for well-defined primer sets, less sensitive than alignment-based matching.</p>
+              <div class="params">Key parameters: <span class="pill">primer_fname</span> primer FASTA file, <span class="pill">mode</span> primer orientation handling, <span class="pill">max_error</span> allowed mismatches, <span class="pill">barcode</span> barcode extraction behavior (if applicable).</div>
             </div>
             <div class="unit">
               <h4>MaskPrimers: align</h4>
-              <p>Primer matching by alignment. Most sensitive.</p>
-              <div class="params">Key params: <span class="pill">primer_fname</span> <span class="pill">mode</span> <span class="pill">max_error</span> <span class="pill">gap</span></div>
+              <p>Detects and masks primers using alignment-based matching.</p>
+              <p><strong>Characteristics:</strong> most sensitive, recommended when primer variability is expected.</p>
+              <div class="params">Key parameters: <span class="pill">primer_fname</span>, <span class="pill">mode</span>, <span class="pill">max_error</span>, <span class="pill">gap</span> gap allowance during alignment.</div>
             </div>
             <div class="unit">
               <h4>MaskPrimers: extract</h4>
-              <p>Extracts a fixed-length region after primers.</p>
-              <div class="params">Key params: <span class="pill">length</span> <span class="pill">mode</span> <span class="pill">barcode</span></div>
+              <p>Extracts a fixed-length sequence region relative to detected primers.</p>
+              <p><strong>Purpose:</strong> isolate the biologically relevant region (e.g., V(D)J segment).</p>
+              <div class="params">Key parameters: <span class="pill">length</span> extracted region length, <span class="pill">mode</span> extraction orientation, <span class="pill">barcode</span> barcode handling behavior.</div>
             </div>
           </div>
 
-          <h3>Pairing and Merge</h3>
+          <h3>Pairing and Merging</h3>
           <div class="grid">
             <div class="unit">
-              <h4>PairSeq (mate pairing)</h4>
-              <p>Pairs R1 and R2 reads and copies annotations if requested.</p>
-              <div class="params">Key params: <span class="pill">head_channel</span> <span class="pill">tail_channel</span> <span class="pill">annotation_fields</span></div>
+              <h4>PairSeq (Mate Pairing)</h4>
+              <p>Pairs R1 and R2 reads and optionally propagates annotation fields.</p>
+              <p><strong>Purpose:</strong> reconstruct paired-end sequencing information before merging or downstream analysis.</p>
+              <div class="params">Key parameters: <span class="pill">head_channel</span> R1 channel, <span class="pill">tail_channel</span> R2 channel, <span class="pill">annotation_fields</span> fields to propagate between mates.</div>
             </div>
           </div>
 
           <h3>Clustering and Consensus</h3>
           <div class="grid">
             <div class="unit">
-              <h4>CollapseSeq (deduplicate)</h4>
-              <p>Deduplicates reads using fields such as BARCODE or UMI.</p>
-              <div class="params">Key params: <span class="pill">outname</span> <span class="pill">uniq_fields</span> <span class="pill">copy_fields</span> <span class="pill">act</span></div>
+              <h4>CollapseSeq (Deduplication)</h4>
+              <p>Deduplicates reads based on shared annotation fields (e.g., BARCODE or UMI).</p>
+              <p><strong>Purpose:</strong> remove PCR duplicates and collapse identical molecular families.</p>
+              <div class="params">Key parameters: <span class="pill">outname</span> output label, <span class="pill">uniq_fields</span> fields defining unique molecules, <span class="pill">copy_fields</span> fields retained in output, <span class="pill">act</span> deduplication action mode.</div>
             </div>
             <div class="unit">
               <h4>BuildConsensus</h4>
-              <p>Builds consensus reads from read families.</p>
-              <div class="params">Key params: <span class="pill">min_count</span> <span class="pill">barcode_field</span> <span class="pill">qmin</span> <span class="pill">maxerror</span></div>
+              <p>Builds consensus sequences from read families sharing a common barcode or UMI.</p>
+              <p><strong>Purpose:</strong> reduce sequencing errors and reconstruct high-confidence molecular sequences.</p>
+              <div class="params">Key parameters: <span class="pill">min_count</span> minimum reads per family, <span class="pill">barcode_field</span> field defining molecular family, <span class="pill">qmin</span> quality threshold, <span class="pill">maxerror</span> maximum allowed error rate.</div>
             </div>
           </div>
         </section>
 
         <section id="sc" class="section">
           <h2>Single-Cell Tutorial</h2>
-          <h3>1. Upload AIRR TSVs</h3>
+          <p>This workflow is designed for preprocessing single-cell AIRR data provided in tabular format (AIRR-compliant TSV files).</p>
+
+          <h3>1. Upload AIRR TSV Files</h3>
+          <p>Upload one or more:</p>
           <ul>
-            <li>Upload one or more <span class="pill">TSV</span> or <span class="pill">TSV.GZ</span> files.</li>
-            <li>A session starts automatically after upload.</li>
+            <li>.tsv</li>
+            <li>.tsv.gz (compressed)</li>
           </ul>
-          <h3>2. Add units to the flow</h3>
+          <p>Files should follow the AIRR Rearrangement schema (recommended).</p>
+          <p>A processing session is created automatically upon successful upload.</p>
+          <p>Multiple files can be uploaded within the same session if they belong to the same experiment or batch.</p>
+
+          <h3>2. Add Units to the Pipeline</h3>
+          <p>Construct your processing flow using modular units.</p>
+          <p>Units are organized into the following categories:</p>
           <ul>
-            <li>Units are grouped into I/O and Merge, QC and Filtering, and Other.</li>
-            <li>Use <span class="pill">Add to pipeline</span>; order follows your clicks.</li>
+            <li>I/O and Merge: import, combine, or restructure tables</li>
+            <li>QC and Filtering: apply quality thresholds or biological constraints</li>
+            <li>Other: additional transformations and utility operations</li>
           </ul>
-          <h3>3. Run and review</h3>
+          <p>Click Add to pipeline to append a unit.</p>
+          <p>Execution order strictly follows the order in which units are added.</p>
+          <p>The pipeline structure is explicit and reproducible.</p>
+
+          <h3>3. Validate and Run</h3>
+          <p>Click Validate to ensure that:</p>
           <ul>
-            <li>Validate the flow, then run.</li>
-            <li>Review state, logs, artifacts, QC plots, and read stats.</li>
+            <li>Required input fields are present</li>
+            <li>Dependencies between units are satisfied</li>
+            <li>Output schema compatibility is preserved</li>
           </ul>
+          <p>Then click Run pipeline to execute the workflow.</p>
+          <p>After execution, review outputs through:</p>
+          <ul>
+            <li>State: current table structure and channel status</li>
+            <li>Log: detailed execution messages for traceability</li>
+            <li>Artifacts: downloadable result files</li>
+            <li>QC Plots: visualization of filtering impact</li>
+            <li>Read Statistics: summary metrics across steps</li>
+          </ul>
+          <p>These panels allow inspection of data integrity and filtering effects at each stage of processing.</p>
         </section>
 
         <section id="sc-units" class="section">
           <h2>Single-Cell Units Reference</h2>
+          <p>This section describes the available preprocessing units for single-cell AIRR TSV workflows.</p>
 
           <h3>I/O and Merge</h3>
           <div class="grid">
             <div class="unit">
-              <h4>Merge samples (AIRR TSV)</h4>
-              <p>Merges multiple TSVs into a single table.</p>
-              <div class="params">Key params: <span class="pill">files</span> <span class="pill">aux_types</span> <span class="pill">sample_field</span></div>
+              <h4>Merge Samples (AIRR TSV)</h4>
+              <p>Merges multiple AIRR TSV files into a single consolidated table.</p>
+              <p><strong>Purpose:</strong> combine samples or batches while preserving cell-level structure and AIRR-compliant fields.</p>
+              <div class="params">Key parameters: <span class="pill">files</span> input TSV files to merge, <span class="pill">aux_types</span> auxiliary metadata types (if provided), <span class="pill">sample_field</span> column used to label sample origin.</div>
+              <p>Ensure that input files follow a consistent schema before merging.</p>
             </div>
           </div>
 
           <h3>QC and Filtering</h3>
           <div class="grid">
             <div class="unit">
-              <h4>Keep productive sequences</h4>
-              <p>Removes non-productive sequences; can fall back to AIRR fields.</p>
-              <div class="params">Key params: <span class="pill">productive_field</span> <span class="pill">fallback_from_airr</span> <span class="pill">mode</span></div>
+              <h4>Keep Productive Sequences</h4>
+              <p>Removes non-productive rearrangements.</p>
+              <p><strong>Purpose:</strong> retain sequences that are in-frame and free of stop codons, suitable for downstream biological interpretation.</p>
+              <p>If a dedicated productivity field is not present, the unit can infer productivity from AIRR-compliant fields.</p>
+              <div class="params">Key parameters: <span class="pill">productive_field</span> column defining productivity, <span class="pill">fallback_from_airr</span> infer productivity from AIRR schema fields, <span class="pill">mode</span> filtering behavior (strict vs fallback logic).</div>
             </div>
             <div class="unit">
-              <h4>Remove cells with multiple heavy chains</h4>
-              <p>Filters cells that have more than one heavy chain.</p>
-              <div class="params">Key params: <span class="pill">locus_field</span> <span class="pill">heavy_value</span> <span class="pill">cell_field</span></div>
+              <h4>Remove Cells with Multiple Heavy Chains</h4>
+              <p>Filters out cells containing more than one heavy-chain rearrangement.</p>
+              <p><strong>Purpose:</strong> enforce canonical single heavy-chain pairing per cell (e.g., one IGH or one TRB).</p>
+              <div class="params">Key parameters: <span class="pill">locus_field</span> column specifying locus (e.g., IGH, IGK, IGL, TRA, TRB), <span class="pill">heavy_value</span> value identifying heavy-chain locus, <span class="pill">cell_field</span> column identifying unique cell barcode.</div>
+              <p>This step is recommended when doublets or multiplets are suspected.</p>
             </div>
             <div class="unit">
-              <h4>Remove cells without heavy chains</h4>
-              <p>Filters cells that only contain light chains.</p>
-              <div class="params">Key params: <span class="pill">locus_field</span> <span class="pill">heavy_value</span> <span class="pill">light_values</span> <span class="pill">cell_field</span></div>
+              <h4>Remove Cells Without Heavy Chains</h4>
+              <p>Removes cells that contain only light-chain rearrangements.</p>
+              <p><strong>Purpose:</strong> retain biologically interpretable B cells with at least one heavy chain (e.g., IGH) present.</p>
+              <div class="params">Key parameters: <span class="pill">locus_field</span> column specifying locus, <span class="pill">heavy_value</span> value identifying heavy-chain locus, <span class="pill">light_values</span> values identifying light-chain loci (e.g., IGK, IGL), <span class="pill">cell_field</span> column identifying unique cell barcode.</div>
+              <p>This step helps ensure valid heavy-light pairing structure in BCR datasets.</p>
             </div>
           </div>
         </section>
 
-        <section id="example" class="section">
-          <h2>Example Bulk Run</h2>
-          <ol>
-            <li>Upload <strong>R1.fastq.gz</strong> and <strong>R2.fastq.gz</strong>.</li>
-            <li>Upload <strong>V_primers.fasta</strong> in the aux section.</li>
-            <li>Add <strong>FilterSeq: quality</strong> (qmin = 20).</li>
-            <li>Add <strong>FilterSeq: length</strong> (min_len = 150).</li>
-            <li>Add <strong>MaskPrimers: align</strong> (primer_fname = V_primers.fasta, mode = mask, max_error = 0.1).</li>
-            <li>Add <strong>PairSeq</strong> (head = R1, tail = R2).</li>
-            <li>Add <strong>CollapseSeq</strong> (uniq_fields = BARCODE).</li>
-            <li>Add <strong>BuildConsensus</strong> (min_count = 2, barcode_field = true).</li>
-            <li>Validate, then Run pipeline.</li>
-            <li>Download outputs from the Artifacts panel.</li>
-          </ol>
+        <section id="pipeline" class="section">
+          <h2>Step-by-Step Pipeline</h2>
+          <p><strong>1. Upload sequencing reads</strong></p>
+          <ul>
+            <li>R1.fastq.gz (required)</li>
+            <li>R2.fastq.gz (paired-end)</li>
+          </ul>
+          <p><strong>2. Upload auxiliary file</strong></p>
+          <ul>
+            <li>V_primers.fasta (primer definitions)</li>
+          </ul>
+          <p><strong>3. Add preprocessing units (in this order)</strong></p>
+          <p>This table defines the parameterized execution order for a representative bulk workflow.</p>
+          <table class="step-table" aria-label="Step-by-step pipeline table">
+            <thead>
+              <tr>
+                <th>Step</th>
+                <th>Command/Process</th>
+                <th>Parameters</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td>Filter quality (R1)</td>
+                <td>n = 20</td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td>Filter quality (R2)</td>
+                <td>n = 20</td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td>MaskPrimer Score (R1)</td>
+                <td>ch = R1, -p = AbSeq_R1_Human_IG, start = 0, mode = cut</td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td>MaskPrimer Score (R2)</td>
+                <td>ch = R2, -p = AbSeq_R2_TS, start = 17, --barcode enabled, mode = cut, maxerror = 0.5</td>
+              </tr>
+              <tr>
+                <td>5</td>
+                <td>PairSeq</td>
+                <td>-1 = R1, -2 = R2, --2f = BARCODE, coord = sra</td>
+              </tr>
+              <tr>
+                <td>6</td>
+                <td>BuildConsensus (R1)</td>
+                <td>ch = R1, bf = BARCODE, pf = PRIMER, prcon = 0.6, maxerror = 0.1, maxgap = 0.5</td>
+              </tr>
+              <tr>
+                <td>7</td>
+                <td>BuildConsensus (R2)</td>
+                <td>ch = R2, bf = BARCODE, maxerror = 0.1, maxgap = 0.5</td>
+              </tr>
+              <tr>
+                <td>8</td>
+                <td>PairSeq</td>
+                <td>-1 = R1, -2 = R2, coord = presto</td>
+              </tr>
+            </tbody>
+          </table>
+          <p><strong>4. Validate the pipeline</strong></p>
+          <ul>
+            <li>Confirm primer dependencies</li>
+            <li>Ensure barcode fields are available</li>
+            <li>Check channel consistency</li>
+          </ul>
+          <p><strong>5. Run the pipeline</strong></p>
+          <p>Execute the workflow after validation completes.</p>
+          <p><strong>6. Download outputs</strong></p>
+          <ul>
+            <li>Retrieve processed FASTQ files and reports from the Artifacts panel.</li>
+          </ul>
+        </section>
+
+        <section id="flow" class="section">
+          <h2>Conceptual Flow</h2>
+          <p>Filter quality (R1/R2) -> MaskPrimer score (R1/R2) -> PairSeq (barcode propagation) -> BuildConsensus (R1/R2) -> PairSeq (final pairing)</p>
+          <p>This workflow targets paired-end, barcode-aware bulk AIRR sequencing and prioritizes quality control, primer handling, and consensus accuracy.</p>
         </section>
       </main>
     </div>
