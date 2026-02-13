@@ -495,41 +495,36 @@
             <tbody>
               <tr>
                 <td>1</td>
-                <td>Filter quality (R1)</td>
+                <td>Filter quality (R1/R2)</td>
                 <td>n = 20</td>
               </tr>
               <tr>
                 <td>2</td>
-                <td>Filter quality (R2)</td>
-                <td>n = 20</td>
-              </tr>
-              <tr>
-                <td>3</td>
                 <td>MaskPrimer Score (R1)</td>
                 <td>ch = R1, -p = AbSeq_R1_Human_IG, start = 0, mode = cut</td>
               </tr>
               <tr>
-                <td>4</td>
+                <td>3</td>
                 <td>MaskPrimer Score (R2)</td>
                 <td>ch = R2, -p = AbSeq_R2_TS, start = 17, --barcode enabled, mode = cut, maxerror = 0.5</td>
               </tr>
               <tr>
-                <td>5</td>
+                <td>4</td>
                 <td>PairSeq</td>
                 <td>-1 = R1, -2 = R2, --2f = BARCODE, coord = sra</td>
               </tr>
               <tr>
-                <td>6</td>
+                <td>5</td>
                 <td>BuildConsensus (R1)</td>
                 <td>ch = R1, bf = BARCODE, pf = PRIMER, prcon = 0.6, maxerror = 0.1, maxgap = 0.5</td>
               </tr>
               <tr>
-                <td>7</td>
+                <td>6</td>
                 <td>BuildConsensus (R2)</td>
                 <td>ch = R2, bf = BARCODE, maxerror = 0.1, maxgap = 0.5</td>
               </tr>
               <tr>
-                <td>8</td>
+                <td>7</td>
                 <td>PairSeq</td>
                 <td>-1 = R1, -2 = R2, coord = presto</td>
               </tr>
