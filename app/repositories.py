@@ -85,6 +85,7 @@ def session_create(
         "current": {},
         "aux": {},
         "aux_files": [],
+        "stats": {},
     }
     row = SessionModel(
         id=sid,

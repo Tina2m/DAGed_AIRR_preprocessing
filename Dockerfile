@@ -14,6 +14,7 @@ WORKDIR /app
 # Copy full project so app.* imports resolve (app.main, app.config, etc.)
 COPY app/ /app/app/
 COPY ui/ /app/ui/
+COPY scripts/ /app/scripts/
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

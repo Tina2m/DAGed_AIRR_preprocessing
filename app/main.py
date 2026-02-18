@@ -182,6 +182,7 @@ class SessionState(BaseModel):
     current: Dict[str, str] = {}     # channel -> artifact-name
     aux: Dict[str, str] = {}         # e.g. {"v_primers": "Greiff2014_VPrimers.fasta"}
     aux_files: List[str] = []        # all uploaded aux filenames
+    stats: Dict[str, Dict[str, Dict[str, Optional[int]]]] = {}
     
 def _ensure_uncompressed_path(path: pathlib.Path, dest: pathlib.Path) -> pathlib.Path:
     """If `path` endswith .gz, decompress to `dest` (overwrite) and return dest; else return path."""
@@ -1284,6 +1285,8 @@ COUNT_KEYS = {
     "SEQUENCE", "SEQUENCES",
     "READ", "READS",
     "INPUT", "TOTAL",
+    "UNIQUE", "RETAINED", "CONSENSUS",
+    "MERGED", "PAIRED",
 }
 
 
@@ -1322,6 +1325,9 @@ def _record_log_count(counts: Dict[str, int], raw_key: str, raw_value: str) -> N
     if key == "INPUT":
         counts["INPUT"] = value
         return
+    if key in ("UNIQUE", "RETAINED", "CONSENSUS", "MERGED", "PAIRED"):
+        counts[key] = value
+        return
     if key == "TOTAL":
         counts["TOTAL"] = value
 
@@ -1355,6 +1361,11 @@ def _parse_log_counts(log_text: str) -> Dict[str, Optional[int]]:
         ):
             _record_log_count(counts, match.group(2), match.group(1))
     passed = counts.get("PASS")
+    if passed is None:
+        for alt in ("UNIQUE", "RETAINED", "CONSENSUS", "MERGED", "PAIRED"):
+            if alt in counts:
+                passed = counts[alt]
+                break
     failed = counts.get("FAIL")
     total = counts.get("SEQUENCES") or counts.get("INPUT") or counts.get("READS") or counts.get("TOTAL")
     if total is None and passed is not None and failed is not None:
@@ -1567,6 +1578,7 @@ def _reset_session_state(sess: SessionState, sdir: pathlib.Path, delete_files: b
     sess.steps = []
     sess.artifacts = keep_artifacts
     sess.current = {}
+    sess.stats = {}
     for art in keep_artifacts.values():
         if art.channel:
             sess.current[art.channel] = art.name
@@ -3604,6 +3616,11 @@ def run_unit(
     try:
         step = unit.run(sess, sdir, body.params)
         sess.steps.append(step)
+        if sess.stats is None:
+            sess.stats = {}
+        counts = _collect_log_counts_for_step(sdir, int(step.step_index))
+        if counts:
+            sess.stats[str(step.step_index)] = counts
         save_state_db(db, sess)
         return {"step": step.model_dump(), "current": sess.current, "artifacts": {k: v.model_dump() for k, v in sess.artifacts.items()}}
     except Exception as e:
@@ -3661,10 +3678,16 @@ def get_step_counts(
     user: Dict[str, str] = Depends(_require_user),
     db: Session = Depends(get_db_dependency),
 ):
-    sdir, _ = _load_session_for_user(user, sid, db)
+    sdir, sess = _load_session_for_user(user, sid, db)
     counts = _collect_log_counts_for_step(sdir, int(step_index))
     if not counts:
         raise HTTPException(404, "Counts not found")
+    if sess.stats is None:
+        sess.stats = {}
+    key = str(int(step_index))
+    if sess.stats.get(key) != counts:
+        sess.stats[key] = counts
+        save_state_db(db, sess)
     return {"step_index": int(step_index), "channels": counts}
 
 @app.get("/session/{sid}/log/{step_index}", response_class=PlainTextResponse)

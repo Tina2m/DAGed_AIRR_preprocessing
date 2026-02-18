@@ -234,7 +234,8 @@ const COUNT_KEY_SET = new Set([
   'FAIL', 'FAILED', 'FAILING',
   'SEQUENCE', 'SEQUENCES',
   'READ', 'READS',
-  'INPUT', 'TOTAL'
+  'INPUT', 'TOTAL',
+  'UNIQUE', 'RETAINED', 'CONSENSUS', 'MERGED', 'PAIRED'
 ]);
 
 function recordCount(counts, rawKey, rawValue) {
@@ -302,7 +303,10 @@ function parseLogCountsFromLines(lines) {
       recordCount(counts, match[2], match[1]);
     }
   });
-  const pass = counts.PASS ?? counts.PASSED ?? null;
+  let pass = counts.PASS ?? counts.PASSED ?? null;
+  if (pass === null || pass === undefined) {
+    pass = counts.UNIQUE ?? counts.RETAINED ?? counts.CONSENSUS ?? counts.MERGED ?? counts.PAIRED ?? null;
+  }
   const fail = counts.FAIL ?? counts.FAILED ?? null;
   let total = counts.SEQUENCES ?? counts.INPUT ?? counts.READS ?? counts.TOTAL ?? null;
   if (total === null && pass !== null && fail !== null) {
@@ -544,6 +548,20 @@ function updateFilteringFunnel(state) {
   if (!mount) {
     return;
   }
+  const getStoredStatsForStep = (stepIndex) => {
+    const stats = state?.stats;
+    if (!stats) {
+      return undefined;
+    }
+    const key = String(stepIndex);
+    if (Object.prototype.hasOwnProperty.call(stats, key)) {
+      return stats[key];
+    }
+    if (Object.prototype.hasOwnProperty.call(stats, stepIndex)) {
+      return stats[stepIndex];
+    }
+    return undefined;
+  };
   const steps = Array.isArray(state?.steps) ? state.steps : [];
   const filterSteps = steps.filter(step => isFilteringUnit(step?.unit || ''));
   if (!filterSteps.length) {
@@ -558,20 +576,34 @@ function updateFilteringFunnel(state) {
     const desiredChannels = selectedChannel === 'R2' ? ['R2'] : ['R1'];
     const results = await Promise.all(filterSteps.map(async (step) => {
       const channels = {};
-      await Promise.all(desiredChannels.map(async (channel) => {
-        const logText = await fetchStepLog(step.step_index, channel);
-        const parsed = parseLogCountsByChannel(logText);
-        let counts = null;
-        const byChannel = parsed.byChannel || {};
-        if (Object.keys(byChannel).length) {
-          counts = byChannel[channel] || null;
-        } else {
-          counts = parsed.fallback;
-        }
-        if (counts && (counts.pass !== null || counts.total !== null)) {
-          channels[channel] = counts;
-        }
-      }));
+      let storedStats = getStoredStatsForStep(step.step_index);
+      if (storedStats && !Object.keys(storedStats).length) {
+        storedStats = undefined;
+      }
+      if (storedStats !== undefined) {
+        const hasOnlySingle = Object.keys(storedStats).length === 1 && storedStats.single;
+        desiredChannels.forEach(channel => {
+          const counts = storedStats[channel] || (hasOnlySingle ? storedStats.single : null);
+          if (counts && (counts.pass !== null || counts.total !== null)) {
+            channels[channel] = counts;
+          }
+        });
+      } else {
+        await Promise.all(desiredChannels.map(async (channel) => {
+          const logText = await fetchStepLog(step.step_index, channel);
+          const parsed = parseLogCountsByChannel(logText);
+          let counts = null;
+          const byChannel = parsed.byChannel || {};
+          if (Object.keys(byChannel).length) {
+            counts = byChannel[channel] || null;
+          } else {
+            counts = parsed.fallback;
+          }
+          if (counts && (counts.pass !== null || counts.total !== null)) {
+            channels[channel] = counts;
+          }
+        }));
+      }
       return { step, channels };
     }));
     if (requestId !== FUNNEL_REQUEST_ID) {
@@ -615,14 +647,15 @@ function updateFilteringFunnel(state) {
       return 0;
     };
 
-    const buildValue = (counts, baseline) => {
-      if (!counts || counts.pass === null || counts.pass === undefined || !baseline) {
+    const buildValue = (counts, inputTotal, prevWidth) => {
+      if (!counts || counts.pass === null || counts.pass === undefined || !inputTotal) {
         return null;
       }
-      const pct = baseline ? (counts.pass / baseline) * 100 : 0;
+      const pct = inputTotal ? (counts.pass / inputTotal) * 100 : 0;
       const rounded = Math.round(pct);
       const percentLabel = (rounded === 0 && counts.pass > 0) ? '<1%' : `${rounded}%`;
-      const width = Math.max(2, Math.min(100, pct));
+      const baseWidth = Number.isFinite(prevWidth) ? prevWidth : 100;
+      const width = Math.max(2, Math.min(100, (baseWidth * pct) / 100));
       return { count: counts.pass, percentLabel, width };
     };
 
@@ -644,26 +677,37 @@ function updateFilteringFunnel(state) {
     };
 
     if (renderChannels.length) {
-      const baselines = {};
+      const initialTotals = {};
+      const previousPass = {};
+      const previousWidth = {};
       renderChannels.forEach(channel => {
-        baselines[channel] = findBaseline(result => result.channels?.[channel]);
+        initialTotals[channel] = findBaseline(result => result.channels?.[channel]);
+        previousPass[channel] = null;
+        previousWidth[channel] = 100;
       });
       let toneIndex = 0;
       renderChannels.forEach(channel => {
-        if (baselines[channel]) {
-          pushTotalRow(`${channel} total reads`, baselines[channel], toneIndex++);
+        if (initialTotals[channel]) {
+          pushTotalRow(`${channel} total reads`, initialTotals[channel], toneIndex++);
         }
       });
       results.forEach(result => {
         renderChannels.forEach(channel => {
-          const baseline = baselines[channel];
-          if (!baseline) {
+          const counts = result.channels?.[channel];
+          if (!counts || counts.pass === null || counts.pass === undefined) {
             return;
           }
-          const value = buildValue(result.channels?.[channel], baseline);
+          const inputTotal = (counts.total && counts.total > 0)
+            ? counts.total
+            : previousPass[channel];
+          const value = buildValue(counts, inputTotal, previousWidth[channel]);
+          if (counts.pass !== null && counts.pass !== undefined) {
+            previousPass[channel] = counts.pass;
+          }
           if (!value) {
             return;
           }
+          previousWidth[channel] = value.width;
           pushStepRow(`${getUnitLabel(result.step.unit || '')} ${channel}`, value, toneIndex++);
         });
       });
@@ -678,11 +722,22 @@ function updateFilteringFunnel(state) {
       }
       let toneIndex = 0;
       pushTotalRow('Total reads', baseline, toneIndex++);
+      let previousPass = null;
+      let previousWidth = 100;
       results.forEach(result => {
-        const value = buildValue(getSingleCounts(result), baseline);
+        const counts = getSingleCounts(result);
+        if (!counts || counts.pass === null || counts.pass === undefined) {
+          return;
+        }
+        const inputTotal = (counts.total && counts.total > 0) ? counts.total : previousPass;
+        const value = buildValue(counts, inputTotal, previousWidth);
+        if (counts.pass !== null && counts.pass !== undefined) {
+          previousPass = counts.pass;
+        }
         if (!value) {
           return;
         }
+        previousWidth = value.width;
         pushStepRow(getUnitLabel(result.step.unit || ''), value, toneIndex++);
       });
     }

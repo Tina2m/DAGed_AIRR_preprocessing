@@ -32,6 +32,8 @@ class SessionState(BaseModel):
     artifacts: Dict[str, Artifact] = {}
     current: Dict[str, str] = {}  # channel -> artifact-name
     aux: Dict[str, str] = {}      # e.g. {"v_primers": "Greiff2014_VPrimers.fasta"}
+    aux_files: List[str] = []
+    stats: Dict[str, Dict[str, Dict[str, Optional[int]]]] = {}
 
 
 class UnitSpec(BaseModel):
