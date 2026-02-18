@@ -10,6 +10,8 @@ let PIPELINE_RUNNING = false;
 let LAST_RUN_WAS_CANCELLED = false;
 let PIPELINE_RUN_MODE = 'continue';
 let SUPPRESS_NEXT_PIPE_RUN = false;
+let LAST_LOG_STEP_INDEX = null;
+let LAST_LOG_SID = null;
 
 const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -59,6 +61,69 @@ function isFilteringUnit(unitId) {
   return FILTER_PREFIXES.some(prefix => lower.startsWith(prefix));
 }
 
+function getStatsChannel() {
+  const select = $('#stats-channel');
+  if (!select) {
+    return 'R1';
+  }
+  const value = select.value || 'R1';
+  return (value === 'R2') ? 'R2' : 'R1';
+}
+
+function getLogChannel() {
+  const select = $('#log-channel');
+  if (!select) {
+    return 'all';
+  }
+  return select.value || 'all';
+}
+
+function buildLogUrl(stepIndex) {
+  let url = `/session/${SID}/log/${stepIndex}`;
+  const channel = getLogChannel();
+  if (channel && channel !== 'all') {
+    url += `?channel=${encodeURIComponent(channel)}`;
+  }
+  return url;
+}
+
+function updateLastLogFromState(state) {
+  const steps = Array.isArray(state?.steps) ? state.steps : [];
+  LAST_LOG_SID = SID;
+  if (!steps.length) {
+    LAST_LOG_STEP_INDEX = null;
+    const logEl = $('#log');
+    if (logEl) {
+      logEl.textContent = '';
+    }
+    return;
+  }
+  LAST_LOG_STEP_INDEX = steps[steps.length - 1].step_index;
+}
+
+async function refreshLog(stepIndex) {
+  const logEl = $('#log');
+  if (!logEl) {
+    return;
+  }
+  if (!Number.isFinite(stepIndex)) {
+    logEl.textContent = '';
+    return;
+  }
+  LAST_LOG_STEP_INDEX = stepIndex;
+  LAST_LOG_SID = SID;
+  try {
+    const logResponse = await apiFetch(buildLogUrl(stepIndex));
+    if (!logResponse.ok) {
+      logEl.textContent = 'Log not found.';
+      return;
+    }
+    logEl.textContent = await logResponse.text();
+  } catch (err) {
+    logEl.textContent = 'Unable to load log.';
+  }
+}
+
 function formatCount(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
@@ -80,17 +145,69 @@ function extractFirstNumber(text) {
   return Number.isFinite(num) ? num : null;
 }
 
+const COUNT_KEY_SET = new Set([
+  'PASS', 'PASSED', 'PASSING',
+  'FAIL', 'FAILED', 'FAILING',
+  'SEQUENCE', 'SEQUENCES',
+  'READ', 'READS',
+  'INPUT', 'TOTAL'
+]);
+
+function recordCount(counts, rawKey, rawValue) {
+  const key = String(rawKey || '').toUpperCase();
+  if (!COUNT_KEY_SET.has(key)) {
+    return;
+  }
+  const value = extractFirstNumber(rawValue);
+  if (value === null) {
+    return;
+  }
+  if (key.startsWith('PASS')) {
+    counts.PASS = value;
+    return;
+  }
+  if (key.startsWith('FAIL')) {
+    counts.FAIL = value;
+    return;
+  }
+  if (key === 'READ' || key === 'READS') {
+    counts.READS = value;
+    return;
+  }
+  if (key === 'SEQUENCE' || key === 'SEQUENCES') {
+    counts.SEQUENCES = value;
+    return;
+  }
+  if (key === 'INPUT') {
+    counts.INPUT = value;
+    return;
+  }
+  if (key === 'TOTAL') {
+    counts.TOTAL = value;
+  }
+}
+
 function parseLogCountsFromLines(lines) {
   const counts = {};
   lines.forEach(line => {
-    const match = line.match(/^\s*([A-Z][A-Z0-9_-]*)>\s*(.+)$/);
-    if (!match) {
+    if (!line) {
       return;
     }
-    const key = match[1].toUpperCase();
-    const value = extractFirstNumber(match[2]);
-    if (value !== null) {
-      counts[key] = value;
+    const arrowMatches = line.matchAll(/([A-Z][A-Z0-9_-]*)>\s*([^\r\n]+)/g);
+    for (const match of arrowMatches) {
+      recordCount(counts, match[1], match[2]);
+    }
+    const pairMatches = line.matchAll(/\b(pass(?:ed|ing)?|fail(?:ed|ing)?|total|reads?|sequences?|input)\b\s*[:=]\s*(\d[\d,]*)/ig);
+    for (const match of pairMatches) {
+      recordCount(counts, match[1], match[2]);
+    }
+    const spacedMatches = line.matchAll(/\b(pass(?:ed|ing)?|fail(?:ed|ing)?|total|reads?|sequences?|input)\b\s+(\d[\d,]*)/ig);
+    for (const match of spacedMatches) {
+      recordCount(counts, match[1], match[2]);
+    }
+    const reverseMatches = line.matchAll(/(\d[\d,]*)\s+\b(pass(?:ed|ing)?|fail(?:ed|ing)?|total|reads?|sequences?|input)\b/ig);
+    for (const match of reverseMatches) {
+      recordCount(counts, match[2], match[1]);
     }
   });
   const pass = counts.PASS ?? counts.PASSED ?? null;
@@ -225,18 +342,39 @@ function parseLogCountsByChannel(logText) {
   return { byChannel, fallback: parseLogCounts(logText) };
 }
 
-async function fetchStepLog(stepIndex) {
+async function fetchStepLog(stepIndex, channel) {
   if (!Number.isFinite(stepIndex)) {
     return '';
   }
   try {
-    const response = await apiFetch(`/session/${SID}/log/${stepIndex}`);
+    let url = `/session/${SID}/log/${stepIndex}`;
+    const ch = (channel || '').toString().toUpperCase();
+    if (ch === 'R1' || ch === 'R2') {
+      url += `?channel=${encodeURIComponent(ch)}`;
+    }
+    const response = await apiFetch(url);
     if (!response.ok) {
       return '';
     }
     return await response.text();
   } catch (err) {
     return '';
+  }
+}
+
+async function fetchStepCounts(stepIndex) {
+  const idx = Number(stepIndex);
+  if (!Number.isFinite(idx)) {
+    return null;
+  }
+  try {
+    const response = await apiFetch(`/session/${SID}/counts/${idx}`);
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch (err) {
+    return null;
   }
 }
 
@@ -338,33 +476,65 @@ function updateFilteringFunnel(state) {
     mount.innerHTML = '<div class="muted">No filtering steps run yet.</div>';
     return;
   }
+  const selectedChannel = getStatsChannel();
   mount.innerHTML = '<div class="muted">Loading read stats...</div>';
 
   (async () => {
+    const desiredChannels = selectedChannel === 'R2' ? ['R2'] : ['R1'];
     const results = await Promise.all(filterSteps.map(async (step) => {
-      const logText = await fetchStepLog(step.step_index);
-      return { step, counts: parseLogCountsByChannel(logText) };
+      const channels = {};
+      const countsPayload = await fetchStepCounts(step.step_index);
+      const countsByChannel = countsPayload?.channels || null;
+      if (countsByChannel) {
+        const hasOnlySingle = Object.keys(countsByChannel).length === 1 && countsByChannel.single;
+        desiredChannels.forEach(channel => {
+          const counts = countsByChannel[channel] || (hasOnlySingle ? countsByChannel.single : null);
+          if (counts && (counts.pass !== null || counts.total !== null)) {
+            channels[channel] = counts;
+          }
+        });
+      }
+      if (!Object.keys(channels).length) {
+        await Promise.all(desiredChannels.map(async (channel) => {
+          const logText = await fetchStepLog(step.step_index, channel);
+          const parsed = parseLogCountsByChannel(logText);
+          let counts = null;
+          const byChannel = parsed.byChannel || {};
+          if (Object.keys(byChannel).length) {
+            counts = byChannel[channel] || null;
+          } else {
+            counts = parsed.fallback;
+          }
+          if (counts && (counts.pass !== null || counts.total !== null)) {
+            channels[channel] = counts;
+          }
+        }));
+      }
+      return { step, channels };
     }));
     if (requestId !== FUNNEL_REQUEST_ID) {
       return;
     }
     const hasR1 = results.some(result => {
-      const r1 = result.counts.byChannel?.R1;
+      const r1 = result.channels?.R1;
       return r1 && (r1.total || r1.pass);
     });
     const hasR2 = results.some(result => {
-      const r2 = result.counts.byChannel?.R2;
+      const r2 = result.channels?.R2;
       return r2 && (r2.total || r2.pass);
     });
-    const useDual = hasR1 && hasR2;
-    const channels = useDual ? ['R1', 'R2'] : ['single'];
+    const requested = selectedChannel === 'R2' ? 'R2' : 'R1';
+    const availableChannels = [];
+    if (hasR1) availableChannels.push('R1');
+    if (hasR2) availableChannels.push('R2');
+    const renderChannels = requested ? (availableChannels.includes(requested) ? [requested] : []) : availableChannels.slice();
 
     const getSingleCounts = (result) => {
-      const r1 = result.counts.byChannel?.R1;
+      const r1 = result.channels?.R1;
       if (r1 && (r1.total || r1.pass)) {
         return r1;
       }
-      return result.counts.fallback;
+      return null;
     };
 
     const findBaseline = (getter) => {
@@ -395,81 +565,71 @@ function updateFilteringFunnel(state) {
     };
 
     const rows = [];
-    if (useDual) {
-      const baselines = {
-        R1: findBaseline(result => result.counts.byChannel?.R1),
-        R2: findBaseline(result => result.counts.byChannel?.R2)
-      };
-      if (!baselines.R1 && !baselines.R2) {
-        mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
-        return;
-      }
+    const pushTotalRow = (label, baseline, toneIndex) => {
       rows.push({
-        label: 'Total reads',
-        values: {
-          R1: baselines.R1 ? { count: baselines.R1, percentLabel: '100%', width: 100 } : null,
-          R2: baselines.R2 ? { count: baselines.R2, percentLabel: '100%', width: 100 } : null
-        },
-        tone: FUNNEL_TONES[0],
+        label,
+        values: { single: { count: baseline, percentLabel: '100%', width: 100 } },
+        tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length],
         isTotal: true
       });
-      let toneIndex = 1;
-      results.forEach(result => {
-        const rowValues = {};
-        let hasAny = false;
-        channels.forEach(channel => {
-          const value = buildValue(result.counts.byChannel?.[channel], baselines[channel]);
-          if (value) {
-            rowValues[channel] = value;
-            hasAny = true;
-          } else {
-            rowValues[channel] = null;
-          }
-        });
-        if (!hasAny) {
-          return;
-        }
-        rows.push({
-          label: getUnitLabel(result.step.unit || ''),
-          values: rowValues,
-          tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length]
-        });
-        toneIndex += 1;
+    };
+    const pushStepRow = (label, value, toneIndex) => {
+      rows.push({
+        label,
+        values: { single: value },
+        tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length]
       });
+    };
+
+    if (renderChannels.length) {
+      const baselines = {};
+      renderChannels.forEach(channel => {
+        baselines[channel] = findBaseline(result => result.channels?.[channel]);
+      });
+      let toneIndex = 0;
+      renderChannels.forEach(channel => {
+        if (baselines[channel]) {
+          pushTotalRow(`${channel} total reads`, baselines[channel], toneIndex++);
+        }
+      });
+      results.forEach(result => {
+        renderChannels.forEach(channel => {
+          const baseline = baselines[channel];
+          if (!baseline) {
+            return;
+          }
+          const value = buildValue(result.channels?.[channel], baseline);
+          if (!value) {
+            return;
+          }
+          pushStepRow(`${getUnitLabel(result.step.unit || '')} ${channel}`, value, toneIndex++);
+        });
+      });
+    } else if (requested) {
+      mount.innerHTML = '<div class="muted">No pass counts found for selected channel.</div>';
+      return;
     } else {
       const baseline = findBaseline(getSingleCounts);
       if (!baseline) {
         mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
         return;
       }
-      rows.push({
-        label: 'Total reads',
-        values: {
-          single: { count: baseline, percentLabel: '100%', width: 100 }
-        },
-        tone: FUNNEL_TONES[0],
-        isTotal: true
-      });
-      let toneIndex = 1;
+      let toneIndex = 0;
+      pushTotalRow('Total reads', baseline, toneIndex++);
       results.forEach(result => {
         const value = buildValue(getSingleCounts(result), baseline);
         if (!value) {
           return;
         }
-        rows.push({
-          label: getUnitLabel(result.step.unit || ''),
-          values: { single: value },
-          tone: FUNNEL_TONES[toneIndex % FUNNEL_TONES.length]
-        });
-        toneIndex += 1;
+        pushStepRow(getUnitLabel(result.step.unit || ''), value, toneIndex++);
       });
     }
 
-    if (rows.length <= 1) {
+    if (!rows.length) {
       mount.innerHTML = '<div class="muted">No pass counts found in logs yet.</div>';
       return;
     }
-    renderFilteringFunnel(mount, rows, channels);
+    renderFilteringFunnel(mount, rows, ['single']);
   })().catch(() => {
     mount.innerHTML = '<div class="muted">Unable to load read stats.</div>';
   });
@@ -1059,8 +1219,7 @@ async function runUnit(card, unitId, forcedParams, opts = {}) {
   }
   await refreshState();
   const stepIndex = data.step.step_index;
-  const logResponse = await apiFetch(`/session/${SID}/log/${stepIndex}`);
-  $('#log').textContent = await logResponse.text();
+  await refreshLog(stepIndex);
   if (!opts.skipHistory) {
     await loadHistory();
   }
@@ -1079,6 +1238,7 @@ function applyStateSnapshot(state) {
   window.__SESSION_STATE__ = state;
   updatePrimerSelects(state);
   wireDownloadLinks();
+  updateLastLogFromState(state);
   updateFilteringFunnel(state);
   renderQcPlots(state);
 }
@@ -1267,6 +1427,9 @@ async function loadHistoryDetails(sid) {
     }
     applyStateSnapshot(state);
     syncPipelineFromSteps(state.steps || []);
+    if (Number.isFinite(LAST_LOG_STEP_INDEX)) {
+      await refreshLog(LAST_LOG_STEP_INDEX);
+    }
     pipeMsg('History loaded', 'muted');
   } catch (err) {
     pipeMsg('Unable to load history.', 'err');
@@ -2009,6 +2172,11 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#history-refresh')?.addEventListener('click', loadHistory);
   $('#pipe-validate')?.addEventListener('click', validatePipeline);
   wirePipelineRunMenu();
+  $('#stats-channel')?.addEventListener('change', () => {
+    if (window.__SESSION_STATE__) {
+      updateFilteringFunnel(window.__SESSION_STATE__);
+    }
+  });
   $('#pipe-run')?.addEventListener('click', async (event) => {
     if (SUPPRESS_NEXT_PIPE_RUN) {
       SUPPRESS_NEXT_PIPE_RUN = false;

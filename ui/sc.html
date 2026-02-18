@@ -109,6 +109,13 @@
         <div class="mt8">
           <details class="stats-toggle">
             <summary><span class="stats-summary-title">Read statistics</span></summary>
+            <div class="stats-toolbar">
+              <label for="stats-channel" class="muted">Channel</label>
+              <select id="stats-channel">
+                <option value="R1">R1</option>
+                <option value="R2">R2</option>
+              </select>
+            </div>
             <div class="muted funnel-note">Percent of reads passing each filtering step.</div>
             <div id="filter-funnel" class="filter-funnel">
               <div class="muted">No filtering steps run yet.</div>

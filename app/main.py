@@ -1277,6 +1277,135 @@ def _maskprimers_no_output_message(log_path: pathlib.Path) -> str:
         msg += "\n" + summary
     return msg
 
+
+COUNT_KEYS = {
+    "PASS", "PASSED", "PASSING",
+    "FAIL", "FAILED", "FAILING",
+    "SEQUENCE", "SEQUENCES",
+    "READ", "READS",
+    "INPUT", "TOTAL",
+}
+
+
+def _extract_first_number(text: str) -> Optional[int]:
+    if not text:
+        return None
+    match = re.search(r"(\d[\d,]*)", str(text))
+    if not match:
+        return None
+    raw = match.group(1).replace(",", "")
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _record_log_count(counts: Dict[str, int], raw_key: str, raw_value: str) -> None:
+    key = str(raw_key or "").upper()
+    if key not in COUNT_KEYS:
+        return
+    value = _extract_first_number(raw_value)
+    if value is None:
+        return
+    if key.startswith("PASS"):
+        counts["PASS"] = value
+        return
+    if key.startswith("FAIL"):
+        counts["FAIL"] = value
+        return
+    if key in ("READ", "READS"):
+        counts["READS"] = value
+        return
+    if key in ("SEQUENCE", "SEQUENCES"):
+        counts["SEQUENCES"] = value
+        return
+    if key == "INPUT":
+        counts["INPUT"] = value
+        return
+    if key == "TOTAL":
+        counts["TOTAL"] = value
+
+
+def _parse_log_counts(log_text: str) -> Dict[str, Optional[int]]:
+    if not log_text:
+        return {"pass": None, "total": None, "counts": {}}
+    counts: Dict[str, int] = {}
+    lines = str(log_text).splitlines()
+    for line in lines:
+        if not line:
+            continue
+        for match in re.finditer(r"([A-Z][A-Z0-9_-]*)>\s*([^\r\n]+)", line):
+            _record_log_count(counts, match.group(1), match.group(2))
+        for match in re.finditer(
+            r"\b(pass(?:ed|ing)?|fail(?:ed|ing)?|total|reads?|sequences?|input)\b\s*[:=]\s*(\d[\d,]*)",
+            line,
+            re.IGNORECASE,
+        ):
+            _record_log_count(counts, match.group(1), match.group(2))
+        for match in re.finditer(
+            r"\b(pass(?:ed|ing)?|fail(?:ed|ing)?|total|reads?|sequences?|input)\b\s+(\d[\d,]*)",
+            line,
+            re.IGNORECASE,
+        ):
+            _record_log_count(counts, match.group(1), match.group(2))
+        for match in re.finditer(
+            r"(\d[\d,]*)\s+\b(pass(?:ed|ing)?|fail(?:ed|ing)?|total|reads?|sequences?|input)\b",
+            line,
+            re.IGNORECASE,
+        ):
+            _record_log_count(counts, match.group(2), match.group(1))
+    passed = counts.get("PASS")
+    failed = counts.get("FAIL")
+    total = counts.get("SEQUENCES") or counts.get("INPUT") or counts.get("READS") or counts.get("TOTAL")
+    if total is None and passed is not None and failed is not None:
+        total = passed + failed
+    return {"pass": passed, "total": total, "counts": counts}
+
+
+def _detect_channel_from_log_text(log_text: str) -> Optional[str]:
+    if not log_text:
+        return None
+    for line in str(log_text).splitlines():
+        text = line.strip()
+        if text.startswith("OUTPUT>") or text.startswith("INPUT>"):
+            name = text.split(">", 1)[1].strip()
+            channel = _guess_channel_from_name(name)
+            if channel:
+                return channel
+    upper = str(log_text).upper()
+    has_r1 = re.search(r"\bR1\b|R1[_\.\-]", upper) is not None
+    has_r2 = re.search(r"\bR2\b|R2[_\.\-]", upper) is not None
+    if has_r1 and not has_r2:
+        return "R1"
+    if has_r2 and not has_r1:
+        return "R2"
+    return None
+
+
+def _collect_log_counts_for_step(sess_dir: pathlib.Path, step_index: int) -> Dict[str, Dict[str, Optional[int]]]:
+    prefix = f"{int(step_index):03d}_"
+    logs = sorted([p for p in sess_dir.iterdir() if p.name.startswith(prefix) and p.suffix == ".log"])
+    results: Dict[str, Dict[str, Optional[int]]] = {}
+    for log_path in logs:
+        try:
+            log_text = log_path.read_text(errors="ignore")
+        except Exception:
+            continue
+        parsed = _parse_log_counts(log_text)
+        if parsed["pass"] is None and parsed["total"] is None:
+            continue
+        channel = None
+        name_upper = log_path.name.upper()
+        if name_upper.endswith("_R1.LOG"):
+            channel = "R1"
+        elif name_upper.endswith("_R2.LOG"):
+            channel = "R2"
+        if not channel:
+            channel = _detect_channel_from_log_text(log_text)
+        key = channel or "single"
+        results[key] = {"pass": parsed["pass"], "total": parsed["total"]}
+    return results
+
 def _default_outname_from_path(path: pathlib.Path) -> str:
     name = path.name
     if name.lower().endswith(".gz"):
@@ -1447,10 +1576,15 @@ def _reset_session_state(sess: SessionState, sdir: pathlib.Path, delete_files: b
 # FilterSeq units
 class U_FilterQuality(UnitSpec):
     def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_FilterSeq_quality.log"
+        idx = _next_idx(sess)
+        log_r1 = sdir / f"{idx:03d}_FilterSeq_quality_R1.log"
         _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
         q = str(params.get("qmin", 20))
-        run_cmd(["FilterSeq.py","quality","-s",str(r1),"-q",q,"--outname",f"R1_q{q}","--log",log.name], sdir, log)
+        run_cmd(
+            ["FilterSeq.py","quality","-s",str(r1),"-q",q,"--outname",f"R1_q{q}","--log",log_r1.name],
+            sdir,
+            log_r1,
+        )
         out_r1 = find_pass_for_prefix(sdir, f"R1_q{q}")
         name_r1 = _with_step("R1_quality", idx)
         produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
@@ -1461,11 +1595,16 @@ class U_FilterQuality(UnitSpec):
             "R1",
             r1,
             sdir / out_r1,
-            log,
+            log_r1,
         )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
-            run_cmd(["FilterSeq.py","quality","-s",str(r2),"-q",q,"--outname",f"R2_q{q}","--log",log.name], sdir, log)
+            log_r2 = sdir / f"{idx:03d}_FilterSeq_quality_R2.log"
+            run_cmd(
+                ["FilterSeq.py","quality","-s",str(r2),"-q",q,"--outname",f"R2_q{q}","--log",log_r2.name],
+                sdir,
+                log_r2,
+            )
             out_r2 = find_pass_for_prefix(sdir, f"R2_q{q}")
             name_r2 = _with_step("R2_quality", idx)
             produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
@@ -1476,7 +1615,7 @@ class U_FilterQuality(UnitSpec):
                 "R2",
                 r2,
                 sdir / out_r2,
-                log,
+                log_r2,
             )
             sess.current["R2"] = name_r2
         sess.current["R1"] = name_r1
@@ -1485,12 +1624,13 @@ class U_FilterQuality(UnitSpec):
 
 class U_FilterLength(UnitSpec):
     def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_FilterSeq_length.log"
+        idx = _next_idx(sess)
+        log_r1 = sdir / f"{idx:03d}_FilterSeq_length_R1.log"
         _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
         n = str(params.get("min_len", 100))
-        cmd = ["FilterSeq.py","length","-s",str(r1),"-n",n,"--outname",f"R1_len{n}","--log",log.name]
+        cmd = ["FilterSeq.py","length","-s",str(r1),"-n",n,"--outname",f"R1_len{n}","--log",log_r1.name]
         if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd.append("--inner")
-        run_cmd(cmd, sdir, log)
+        run_cmd(cmd, sdir, log_r1)
         out_r1 = find_pass_for_prefix(sdir, f"R1_len{n}")
         name_r1 = _with_step("R1_length", idx)
         produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
@@ -1501,13 +1641,14 @@ class U_FilterLength(UnitSpec):
             "R1",
             r1,
             sdir / out_r1,
-            log,
+            log_r1,
         )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
-            cmd2 = ["FilterSeq.py","length","-s",str(r2),"-n",n,"--outname",f"R2_len{n}","--log",log.name]
+            log_r2 = sdir / f"{idx:03d}_FilterSeq_length_R2.log"
+            cmd2 = ["FilterSeq.py","length","-s",str(r2),"-n",n,"--outname",f"R2_len{n}","--log",log_r2.name]
             if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd2.append("--inner")
-            run_cmd(cmd2, sdir, log)
+            run_cmd(cmd2, sdir, log_r2)
             out_r2 = find_pass_for_prefix(sdir, f"R2_len{n}")
             name_r2 = _with_step("R2_length", idx)
             produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
@@ -1518,7 +1659,7 @@ class U_FilterLength(UnitSpec):
                 "R2",
                 r2,
                 sdir / out_r2,
-                log,
+                log_r2,
             )
             sess.current["R2"] = name_r2
         sess.current["R1"] = name_r1
@@ -1527,12 +1668,13 @@ class U_FilterLength(UnitSpec):
 
 class U_FilterMissing(UnitSpec):
     def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_FilterSeq_missing.log"
+        idx = _next_idx(sess)
+        log_r1 = sdir / f"{idx:03d}_FilterSeq_missing_R1.log"
         _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
         n = str(params.get("max_missing", 10))
-        cmd = ["FilterSeq.py","missing","-s",str(r1),"-n",n,"--outname",f"R1_m{n}","--log",log.name]
+        cmd = ["FilterSeq.py","missing","-s",str(r1),"-n",n,"--outname",f"R1_m{n}","--log",log_r1.name]
         if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd.append("--inner")
-        run_cmd(cmd, sdir, log)
+        run_cmd(cmd, sdir, log_r1)
         out_r1 = find_pass_for_prefix(sdir, f"R1_m{n}")
         name_r1 = _with_step("R1_missing", idx)
         produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
@@ -1543,13 +1685,14 @@ class U_FilterMissing(UnitSpec):
             "R1",
             r1,
             sdir / out_r1,
-            log,
+            log_r1,
         )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
-            cmd2 = ["FilterSeq.py","missing","-s",str(r2),"-n",n,"--outname",f"R2_m{n}","--log",log.name]
+            log_r2 = sdir / f"{idx:03d}_FilterSeq_missing_R2.log"
+            cmd2 = ["FilterSeq.py","missing","-s",str(r2),"-n",n,"--outname",f"R2_m{n}","--log",log_r2.name]
             if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd2.append("--inner")
-            run_cmd(cmd2, sdir, log)
+            run_cmd(cmd2, sdir, log_r2)
             out_r2 = find_pass_for_prefix(sdir, f"R2_m{n}")
             name_r2 = _with_step("R2_missing", idx)
             produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
@@ -1560,7 +1703,7 @@ class U_FilterMissing(UnitSpec):
                 "R2",
                 r2,
                 sdir / out_r2,
-                log,
+                log_r2,
             )
             sess.current["R2"] = name_r2
         sess.current["R1"] = name_r1
@@ -1569,13 +1712,14 @@ class U_FilterMissing(UnitSpec):
 
 class U_FilterRepeats(UnitSpec):
     def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_FilterSeq_repeats.log"
+        idx = _next_idx(sess)
+        log_r1 = sdir / f"{idx:03d}_FilterSeq_repeats_R1.log"
         _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
         n = str(params.get("max_repeat","0.8"))
-        cmd = ["FilterSeq.py","repeats","-s",str(r1),"-n",n,"--outname",f"R1_rep{n}","--log",log.name]
+        cmd = ["FilterSeq.py","repeats","-s",str(r1),"-n",n,"--outname",f"R1_rep{n}","--log",log_r1.name]
         if str(params.get("missing","false")).lower() in ("1","true","yes","y"): cmd.append("--missing")
         if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd.append("--inner")
-        run_cmd(cmd, sdir, log)
+        run_cmd(cmd, sdir, log_r1)
         out_r1 = find_pass_for_prefix(sdir, f"R1_rep{n}")
         name_r1 = _with_step("R1_repeats", idx)
         produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
@@ -1586,14 +1730,15 @@ class U_FilterRepeats(UnitSpec):
             "R1",
             r1,
             sdir / out_r1,
-            log,
+            log_r1,
         )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
-            cmd2 = ["FilterSeq.py","repeats","-s",str(r2),"-n",n,"--outname",f"R2_rep{n}","--log",log.name]
+            log_r2 = sdir / f"{idx:03d}_FilterSeq_repeats_R2.log"
+            cmd2 = ["FilterSeq.py","repeats","-s",str(r2),"-n",n,"--outname",f"R2_rep{n}","--log",log_r2.name]
             if str(params.get("missing","false")).lower() in ("1","true","yes","y"): cmd2.append("--missing")
             if str(params.get("inner","false")).lower() in ("1","true","yes","y"): cmd2.append("--inner")
-            run_cmd(cmd2, sdir, log)
+            run_cmd(cmd2, sdir, log_r2)
             out_r2 = find_pass_for_prefix(sdir, f"R2_rep{n}")
             name_r2 = _with_step("R2_repeats", idx)
             produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
@@ -1604,7 +1749,7 @@ class U_FilterRepeats(UnitSpec):
                 "R2",
                 r2,
                 sdir / out_r2,
-                log,
+                log_r2,
             )
             sess.current["R2"] = name_r2
         sess.current["R1"] = name_r1
@@ -1613,13 +1758,14 @@ class U_FilterRepeats(UnitSpec):
 
 class U_FilterTrimQual(UnitSpec):
     def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_FilterSeq_trimqual.log"
+        idx = _next_idx(sess)
+        log_r1 = sdir / f"{idx:03d}_FilterSeq_trimqual_R1.log"
         _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
         q = str(params.get("qmin", 20)); win = params.get("window", 10)
-        cmd = ["FilterSeq.py","trimqual","-s",str(r1),"-q",q,"--outname",f"R1_tq{q}","--log",log.name]
+        cmd = ["FilterSeq.py","trimqual","-s",str(r1),"-q",q,"--outname",f"R1_tq{q}","--log",log_r1.name]
         if win: cmd += ["--win", str(win)]
         if str(params.get("reverse","false")).lower() in ("1","true","yes","y"): cmd.append("--reverse")
-        run_cmd(cmd, sdir, log)
+        run_cmd(cmd, sdir, log_r1)
         out_r1 = find_pass_for_prefix(sdir, f"R1_tq{q}")
         name_r1 = _with_step("R1_trimqual", idx)
         produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
@@ -1630,14 +1776,15 @@ class U_FilterTrimQual(UnitSpec):
             "R1",
             r1,
             sdir / out_r1,
-            log,
+            log_r1,
         )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
-            cmd2 = ["FilterSeq.py","trimqual","-s",str(r2),"-q",q,"--outname",f"R2_tq{q}","--log",log.name]
+            log_r2 = sdir / f"{idx:03d}_FilterSeq_trimqual_R2.log"
+            cmd2 = ["FilterSeq.py","trimqual","-s",str(r2),"-q",q,"--outname",f"R2_tq{q}","--log",log_r2.name]
             if win: cmd2 += ["--win", str(win)]
             if str(params.get("reverse","false")).lower() in ("1","true","yes","y"): cmd2.append("--reverse")
-            run_cmd(cmd2, sdir, log)
+            run_cmd(cmd2, sdir, log_r2)
             out_r2 = find_pass_for_prefix(sdir, f"R2_tq{q}")
             name_r2 = _with_step("R2_trimqual", idx)
             produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
@@ -1648,7 +1795,7 @@ class U_FilterTrimQual(UnitSpec):
                 "R2",
                 r2,
                 sdir / out_r2,
-                log,
+                log_r2,
             )
             sess.current["R2"] = name_r2
         sess.current["R1"] = name_r1
@@ -1657,10 +1804,15 @@ class U_FilterTrimQual(UnitSpec):
 
 class U_FilterMaskQual(UnitSpec):
     def run(self, sess, sdir, params):
-        idx = _next_idx(sess); log = sdir / f"{idx:03d}_FilterSeq_maskqual.log"
+        idx = _next_idx(sess)
+        log_r1 = sdir / f"{idx:03d}_FilterSeq_maskqual_R1.log"
         _assert_channel(sess, "R1"); r1 = sdir / sess.artifacts[sess.current["R1"]].path
         q = str(params.get("qmin", 20))
-        run_cmd(["FilterSeq.py","maskqual","-s",str(r1),"-q",q,"--outname",f"R1_mq{q}","--log",log.name], sdir, log)
+        run_cmd(
+            ["FilterSeq.py","maskqual","-s",str(r1),"-q",q,"--outname",f"R1_mq{q}","--log",log_r1.name],
+            sdir,
+            log_r1,
+        )
         out_r1 = find_pass_for_prefix(sdir, f"R1_mq{q}")
         name_r1 = _with_step("R1_maskqual", idx)
         produced = [Artifact(name=name_r1, path=out_r1, kind="fastq", channel="R1", from_step=idx)]
@@ -1671,11 +1823,16 @@ class U_FilterMaskQual(UnitSpec):
             "R1",
             r1,
             sdir / out_r1,
-            log,
+            log_r1,
         )
         if sess.current.get("R2"):
             r2 = sdir / sess.artifacts[sess.current["R2"]].path
-            run_cmd(["FilterSeq.py","maskqual","-s",str(r2),"-q",q,"--outname",f"R2_mq{q}","--log",log.name], sdir, log)
+            log_r2 = sdir / f"{idx:03d}_FilterSeq_maskqual_R2.log"
+            run_cmd(
+                ["FilterSeq.py","maskqual","-s",str(r2),"-q",q,"--outname",f"R2_mq{q}","--log",log_r2.name],
+                sdir,
+                log_r2,
+            )
             out_r2 = find_pass_for_prefix(sdir, f"R2_mq{q}")
             name_r2 = _with_step("R2_maskqual", idx)
             produced.append(Artifact(name=name_r2, path=out_r2, kind="fastq", channel="R2", from_step=idx))
@@ -1686,7 +1843,7 @@ class U_FilterMaskQual(UnitSpec):
                 "R2",
                 r2,
                 sdir / out_r2,
-                log,
+                log_r2,
             )
             sess.current["R2"] = name_r2
         sess.current["R1"] = name_r1
@@ -3497,16 +3654,35 @@ def download_artifact(
     if not path.exists(): raise HTTPException(404, "File missing on disk")
     return FileResponse(path, filename=path.name)
 
-@app.get("/session/{sid}/log/{step_index}", response_class=PlainTextResponse)
-def get_log(
+@app.get("/session/{sid}/counts/{step_index}")
+def get_step_counts(
     sid: str,
     step_index: int,
     user: Dict[str, str] = Depends(_require_user),
     db: Session = Depends(get_db_dependency),
 ):
     sdir, _ = _load_session_for_user(user, sid, db)
+    counts = _collect_log_counts_for_step(sdir, int(step_index))
+    if not counts:
+        raise HTTPException(404, "Counts not found")
+    return {"step_index": int(step_index), "channels": counts}
+
+@app.get("/session/{sid}/log/{step_index}", response_class=PlainTextResponse)
+def get_log(
+    sid: str,
+    step_index: int,
+    channel: Optional[str] = None,
+    user: Dict[str, str] = Depends(_require_user),
+    db: Session = Depends(get_db_dependency),
+):
+    sdir, _ = _load_session_for_user(user, sid, db)
     prefix = f"{int(step_index):03d}_"
     logs = sorted([p for p in sdir.iterdir() if p.name.startswith(prefix) and p.suffix == ".log"])
+    channel = (channel or "").strip().upper()
+    if channel in ("R1", "R2"):
+        filtered = [p for p in logs if p.name.upper().endswith(f"_{channel}.LOG")]
+        if filtered:
+            logs = filtered
     if not logs: raise HTTPException(404, "Log not found")
     return "\n\n".join(p.read_text(errors="ignore") for p in logs)
 

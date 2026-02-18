@@ -371,6 +371,7 @@ def download_artifact(
 def get_log(
     session_id: str,
     step_index: int,
+    channel: Optional[str] = None,
     user: Dict[str, str] = Depends(_require_user),
 ):
     """
@@ -392,6 +393,11 @@ def get_log(
         p for p in session_dir.iterdir()
         if p.name.startswith(prefix) and p.suffix == ".log"
     ])
+    channel = (channel or "").strip().upper()
+    if channel in ("R1", "R2"):
+        filtered = [p for p in logs if p.name.upper().endswith(f"_{channel}.LOG")]
+        if filtered:
+            logs = filtered
     
     if not logs:
         raise HTTPException(404, "Log not found")
