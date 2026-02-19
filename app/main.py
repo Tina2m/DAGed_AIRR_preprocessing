@@ -3727,6 +3727,8 @@ def get_log(
         filtered = [p for p in logs if p.name.upper().endswith(f"_{channel}.LOG")]
         if filtered:
             logs = filtered
+        elif channel == "R2":
+            raise HTTPException(404, "Log not found")
     if not logs: raise HTTPException(404, "Log not found")
     return "\n\n".join(p.read_text(errors="ignore") for p in logs)
 

@@ -74,6 +74,47 @@ function getStatsChannel() {
   return (value === 'R2') ? 'R2' : 'R1';
 }
 
+function stateHasR2(state) {
+  if (!state) {
+    return false;
+  }
+  const current = state.current || {};
+  if (Object.prototype.hasOwnProperty.call(current, 'R2')) {
+    return true;
+  }
+  const stats = state.stats || {};
+  return Object.values(stats).some(entry => {
+    const r2 = entry && entry.R2;
+    if (!r2) {
+      return false;
+    }
+    const hasPass = r2.pass !== null && r2.pass !== undefined;
+    const hasTotal = r2.total !== null && r2.total !== undefined;
+    return hasPass || hasTotal;
+  });
+}
+
+function updateStatsChannelOptions(state) {
+  const select = $('#stats-channel');
+  if (!select) {
+    return;
+  }
+  const wantR2 = stateHasR2(state);
+  const r2Option = select.querySelector('option[value="R2"]');
+  if (wantR2 && !r2Option) {
+    const opt = document.createElement('option');
+    opt.value = 'R2';
+    opt.textContent = 'R2';
+    select.appendChild(opt);
+  }
+  if (!wantR2 && r2Option) {
+    if (select.value === 'R2') {
+      select.value = 'R1';
+    }
+    r2Option.remove();
+  }
+}
+
 function getLogChannel() {
   const select = $('#log-channel');
   if (!select) {
@@ -1296,6 +1337,7 @@ function applyStateSnapshot(state) {
   $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
   window.__SESSION_STATE__ = state;
   updatePrimerSelects(state);
+  updateStatsChannelOptions(state);
   wireDownloadLinks();
   updateLastLogFromState(state);
   updateFilteringFunnel(state);
