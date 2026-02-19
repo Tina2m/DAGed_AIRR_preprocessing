@@ -79,6 +79,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
 def _session_dir(session_id: str) -> pathlib.Path:
     """Path to session working directory (uploads, logs, pipeline outputs)."""
     return SESSION_FILES_BASE / str(session_id)
@@ -3447,15 +3456,23 @@ def _infer_group(state: SessionState) -> str:
 def list_sessions(user: Dict[str, str] = Depends(_require_user), db: Session = Depends(get_db_dependency)):
     rows = session_list_by_user(db, uuid.UUID(user["user_id"]))
     results = []
-    for row in sorted(rows, key=lambda r: r.updated_at, reverse=True):
+    min_sort_dt = datetime.min.replace(tzinfo=timezone.utc)
+    for row in rows:
         try:
             state = SessionState.model_validate(row.state_json)
         except Exception:
-            results.append({"session_id": str(row.id), "group": "unknown"})
+            results.append({"session_id": str(row.id), "group": "unknown", "_sort_dt": row.updated_at or row.created_at or min_sort_dt})
             continue
         if not state.steps:
             continue
         group = _infer_group(state)
+        sort_dt = (
+            _parse_iso_dt(state.updated_at)
+            or _parse_iso_dt(state.created_at)
+            or row.updated_at
+            or row.created_at
+            or min_sort_dt
+        )
         results.append({
             "session_id": str(row.id),
             "display_name": row.display_name,
@@ -3464,7 +3481,11 @@ def list_sessions(user: Dict[str, str] = Depends(_require_user), db: Session = D
             "steps": len(state.steps),
             "artifacts": len(state.artifacts),
             "group": group,
+            "_sort_dt": sort_dt,
         })
+    results.sort(key=lambda item: item.get("_sort_dt") or min_sort_dt, reverse=True)
+    for item in results:
+        item.pop("_sort_dt", None)
     return results
 
 @app.post("/session/start")

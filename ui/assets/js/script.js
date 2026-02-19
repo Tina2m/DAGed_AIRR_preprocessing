@@ -1532,18 +1532,20 @@ async function deleteHistorySession(sid) {
   }
 }
 
-async function renameHistorySession(sid) {
-  if (!sid) {
-    return;
-  }
-  const raw = window.prompt('Enter new session name:', sid);
-  if (raw === null) {
-    return;
-  }
-  const newSid = raw.trim();
-  if (!newSid || newSid === sid) {
-    return;
-  }
+  async function renameHistorySession(sid, currentName) {
+    if (!sid) {
+      return;
+    }
+    const trimmedCurrent = (currentName || '').trim();
+    const defaultName = trimmedCurrent || sid;
+    const raw = window.prompt('Enter new session name:', defaultName);
+    if (raw === null) {
+      return;
+    }
+    const newSid = raw.trim();
+    if (!newSid || newSid === defaultName) {
+      return;
+    }
   try {
     const response = await apiFetch(`/session/${sid}/rename`, {
       method: 'PATCH',
@@ -1562,20 +1564,10 @@ async function renameHistorySession(sid) {
       }
       throw new Error(message);
     }
-    const payload = await response.json();
-    const updatedSid = payload?.new_session_id || newSid;
-    if (HISTORY_SELECTED === sid) {
-      HISTORY_SELECTED = updatedSid;
-    }
-    if (SID === sid) {
-      SID = updatedSid;
-      const sidEl = $('#sid');
-      if (sidEl) {
-        sidEl.textContent = updatedSid;
-      }
-    }
-    await loadHistory();
-    pipeMsg(`Session renamed to ${updatedSid}.`, 'ok');
+      const payload = await response.json();
+      const updatedSid = payload?.new_session_id || newSid;
+      await loadHistory();
+      pipeMsg(`Session renamed to ${updatedSid}.`, 'ok');
   } catch (err) {
     pipeMsg(err?.message || 'Unable to rename session.', 'err');
   }
@@ -1607,14 +1599,16 @@ async function loadHistory() {
       return;
     }
     list.innerHTML = '';
-    sorted.forEach(session => {
-      const row = document.createElement('div');
-      row.className = 'run-history-item';
-      row.dataset.sid = session.session_id;
-      const meta = [];
-      const time = formatTimestamp(session.updated_at || session.created_at);
-      if (time !== 'unknown') {
-        meta.push(time);
+      sorted.forEach(session => {
+        const row = document.createElement('div');
+        row.className = 'run-history-item';
+        row.dataset.sid = session.session_id;
+        const displayName = (session.display_name || '').trim();
+        const label = displayName || session.session_id;
+        const meta = [];
+        const time = formatTimestamp(session.updated_at || session.created_at);
+        if (time !== 'unknown') {
+          meta.push(time);
       }
       if (typeof session.steps === 'number') {
         meta.push(`${session.steps} step${session.steps === 1 ? '' : 's'}`);
@@ -1622,11 +1616,14 @@ async function loadHistory() {
       if (typeof session.artifacts === 'number') {
         meta.push(`${session.artifacts} artifact${session.artifacts === 1 ? '' : 's'}`);
       }
-      const openBtn = document.createElement('button');
-      openBtn.type = 'button';
-      openBtn.className = 'run-history-open';
-      openBtn.innerHTML = `<strong>${esc(session.session_id)}</strong><small>${esc(meta.join(' | '))}</small>`;
-      openBtn.addEventListener('click', () => loadHistoryDetails(session.session_id));
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'run-history-open';
+        openBtn.innerHTML = `<strong>${esc(label)}</strong><small>${esc(meta.join(' | '))}</small>`;
+        if (displayName) {
+          openBtn.title = `Session ID: ${session.session_id}`;
+        }
+        openBtn.addEventListener('click', () => loadHistoryDetails(session.session_id));
 
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
@@ -1639,16 +1636,16 @@ async function loadHistory() {
         deleteHistorySession(session.session_id);
       });
 
-      const renameBtn = document.createElement('button');
-      renameBtn.type = 'button';
-      renameBtn.className = 'run-history-rename';
-      renameBtn.title = `Rename ${session.session_id}`;
-      renameBtn.setAttribute('aria-label', `Rename ${session.session_id}`);
-      renameBtn.textContent = 'edit';
-      renameBtn.addEventListener('click', (event) => {
-        event.stopPropagation();
-        renameHistorySession(session.session_id);
-      });
+        const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
+        renameBtn.className = 'run-history-rename';
+        renameBtn.title = `Rename ${label}`;
+        renameBtn.setAttribute('aria-label', `Rename ${label}`);
+        renameBtn.textContent = 'edit';
+        renameBtn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          renameHistorySession(session.session_id, displayName);
+        });
 
       const actions = document.createElement('div');
       actions.className = 'run-history-actions';
