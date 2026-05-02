@@ -23,6 +23,30 @@ const formatUnitLabel = label => {
 };
 const apiFetch = (window.Auth && window.Auth.apiFetch) ? window.Auth.apiFetch : fetch;
 
+function artifactExtFromPath(path) {
+  const base = String(path || '').split(/[\\/]/).pop();
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) {
+    return '';
+  }
+  return base.slice(dot);
+}
+
+function artifactDownloadName(artifact) {
+  if (!artifact) {
+    return '';
+  }
+  const name = String(artifact.name || '');
+  if (!name) {
+    return '';
+  }
+  const ext = artifactExtFromPath(artifact.path || '');
+  if (!ext) {
+    return name;
+  }
+  return name.toLowerCase().endsWith(ext.toLowerCase()) ? name : name + ext;
+}
+
 function getStatsChannel() {
   const select = $('#stats-channel');
   if (!select) {
@@ -1600,6 +1624,7 @@ function wireDownloadLinks() {
       if (!name) {
         return;
       }
+      const filename = link.dataset.fname || name;
       try {
         const response = await apiFetch(`/session/${SID}/download/${encodeURIComponent(name)}`);
         if (!response.ok) {
@@ -1609,7 +1634,7 @@ function wireDownloadLinks() {
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         anchor.href = url;
-        anchor.download = name;
+        anchor.download = filename;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -1628,9 +1653,11 @@ function applyStateSnapshot(state) {
     `<span class="pill">${esc(key)}: ${esc(value)}</span>`
   ).join(' ');
   $('#statebox').innerHTML = chips || '<span class="muted">no state</span>';
-  const artifacts = Object.values(state.artifacts || {}).map(artifact =>
-    `<div>${esc(artifact.name)} - <a href="#" class="art-download" data-art="${esc(artifact.name)}">download</a></div>`
-  ).join('');
+  const artifacts = Object.values(state.artifacts || {}).map(artifact => {
+    const displayName = artifactDownloadName(artifact);
+    const rawName = artifact?.name || '';
+    return `<div>${esc(displayName)} - <a href="#" class="art-download" data-art="${esc(rawName)}" data-fname="${esc(displayName)}">download</a></div>`;
+  }).join('');
   $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
   wireDownloadLinks();
   updateLastLogFromState(state);
@@ -1729,10 +1756,12 @@ function collectUploadedItems(state) {
   const items = [];
   const artifacts = Object.values(state.artifacts || {});
   artifacts.filter(art => art.from_step === -1).forEach(art => {
+    const downloadName = artifactDownloadName(art);
     items.push({
       label: art.path || art.name,
       sub: art.name,
-      download: art.name
+      download: art.name,
+      downloadName
     });
   });
   (state.aux_files || []).forEach(name => {
@@ -1747,7 +1776,8 @@ function collectOutputItems(state) {
     if (typeof art.from_step === 'number' && art.from_step >= 0) {
       const label = art.path || art.name;
       const sub = (art.path && art.path !== art.name) ? art.name : '';
-      items.push({ label, sub, download: art.name });
+      const downloadName = artifactDownloadName(art);
+      items.push({ label, sub, download: art.name, downloadName });
     }
   });
   return items;
@@ -1760,7 +1790,7 @@ function renderArtifactItems(items, emptyText, sid) {
   return items.map(item => {
     const sub = item.sub ? `<div class="artifact-sub">${esc(item.sub)}</div>` : '';
     const download = item.download
-      ? `<a href="#" class="history-download" data-sid="${esc(sid)}" data-art="${esc(item.download)}">download</a>`
+      ? `<a href="#" class="history-download" data-sid="${esc(sid)}" data-art="${esc(item.download)}"${item.downloadName ? ` data-fname="${esc(item.downloadName)}"` : ''}>download</a>`
       : '';
     return `<div class="artifact-item"><div><div class="artifact-label">${esc(item.label)}</div>${sub}</div>${download}</div>`;
   }).join('');
@@ -2056,6 +2086,7 @@ function wireHistoryDownloads() {
       if (!name || !sid) {
         return;
       }
+      const filename = link.dataset.fname || name;
       try {
         const response = await apiFetch(`/session/${sid}/download/${encodeURIComponent(name)}`);
         if (!response.ok) {
@@ -2065,7 +2096,7 @@ function wireHistoryDownloads() {
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         anchor.href = url;
-        anchor.download = name;
+        anchor.download = filename;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();

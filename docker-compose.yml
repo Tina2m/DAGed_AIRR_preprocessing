@@ -1,6 +1,6 @@
 # ImmunoStream / AIRR preprocessing app with PostgreSQL
 # Run: docker compose up --build
-# App: http://localhost:8000  UI: http://localhost:8000/ui/
+# App: http://localhost:80  UI: http://localhost:80/ui/
 
 services:
   postgres:
@@ -28,12 +28,27 @@ services:
       SESSION_FILES_DIR: /data/session_files
     volumes:
       - session_files:/data/session_files
-    ports:
-      - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command:
+      [
+        "uvicorn", "app.main:app",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--workers", "4",
+        "--timeout-keep-alive", "120"
+      ]
+
+  nginx:
+    image: nginx:alpine
+    container_name: immunostream-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app
 
 volumes:
   postgres_data:

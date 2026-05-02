@@ -9,6 +9,8 @@ REQUIRED_TOOLS = [
     "MaskPrimers.py",
     "CollapseSeq.py",
     "BuildConsensus.py",
+    "PairSeq.py",
+    "AssemblePairs.py",
 ]
 
 # Base directory for legacy file-based data (only used if DB not configured)
@@ -28,6 +30,8 @@ NPROC_TOOLS = {
     "MaskPrimers.py",
     "CollapseSeq.py",
     "BuildConsensus.py",
+    "PairSeq.py",
+    "AssemblePairs.py",
 }
 
 

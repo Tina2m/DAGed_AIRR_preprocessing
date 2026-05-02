@@ -17,16 +17,46 @@ const $  = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const apiFetch = (window.Auth && window.Auth.apiFetch) ? window.Auth.apiFetch : fetch;
+
+function artifactExtFromPath(path) {
+  const base = String(path || '').split(/[\\/]/).pop();
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) {
+    return '';
+  }
+  return base.slice(dot);
+}
+
+function artifactDownloadName(artifact) {
+  if (!artifact) {
+    return '';
+  }
+  const name = String(artifact.name || '');
+  if (!name) {
+    return '';
+  }
+  const ext = artifactExtFromPath(artifact.path || '');
+  if (!ext) {
+    return name;
+  }
+  return name.toLowerCase().endsWith(ext.toLowerCase()) ? name : name + ext;
+}
 /* ---------- Category config to reduce scrolling ---------- */
 const CATEGORIES = {
   "Filtering and Quality Control": [
     "filter_quality","filter_length","filter_missing",
     "filter_repeats","filter_trimqual","filter_maskqual"
   ],
-  "Tecnical processing(Primers)": [
+  "Technical Processing (Primers)": [
     "mask_primers_score",
     "mask_primers_align",
     "mask_primers_extract"
+  ],
+  "Read Assembly": [
+    "assemble_pairs_align",
+    "assemble_pairs_join",
+    "assemble_pairs_reference",
+    "assemble_pairs_sequential"
   ],
   "Pairing and Merge": [
     "pair_seq"
@@ -36,9 +66,14 @@ const CATEGORIES = {
   ],
 };
 const CAT_BY_ID = {};
-Object.entries(CATEGORIES).forEach(([cat, ids])=>ids.forEach(id=>CAT_BY_ID[id]=cat));
-function unitCategory(id) {
-  return CAT_BY_ID[id] || "Other";
+Object.entries(CATEGORIES).forEach(([cat, ids])=>ids.forEach(id=>CAT_BY_ID[id.toLowerCase()]=cat));
+function unitCategory(id, label = '') {
+  const key = (id || '').toLowerCase();
+  const text = [key, (label || '').toLowerCase()].join(' ');
+  if (key.startsWith('assemble_pairs_') || key.startsWith('assemblepairs_') || text.includes('assemblepairs')) {
+    return "Read Assembly";
+  }
+  return CAT_BY_ID[key] || "Other";
 }
 
 const FILTER_PREFIXES = ["filter_", "mask_primers_"];
@@ -1171,6 +1206,15 @@ async function uploadAux() {
         }
       });
   }
+  if ((data.stored_as || '').toLowerCase().match(/\.(fasta|fa|fna)(\.gz)?$/)) {
+    $$('.unit-card[data-unit="assemble_pairs_reference"], .unit-card[data-unit="assemble_pairs_sequential"]')
+      .forEach(card => {
+        const select = card.querySelector('select[name="ref_file"]');
+        if (select && !select.value) {
+          select.value = data.stored_as;
+        }
+      });
+  }
 }
 
 function collectParams(card) {
@@ -1241,28 +1285,39 @@ function collectAuxFiles(state){
   return names;
 }
 
-function updatePrimerSelects(state){
+function populateSelect(select, options){
+  const current = select.value;
+  select.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'choose...';
+  select.appendChild(placeholder);
+  options.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+  if(current && Array.from(select.options).some(opt => opt.value === current)){
+    select.value = current;
+  }
+}
+
+function updateAuxFileSelects(state){
   const options = collectAuxFiles(state);
-  const selects = document.querySelectorAll(
+  document.querySelectorAll(
     '.unit-card[data-unit="mask_primers_score"] select[name="primer_fname"],' +
     '.unit-card[data-unit="mask_primers_align"] select[name="primer_fname"]'
-  );
-  selects.forEach(select => {
-    const current = select.value;
-    select.innerHTML = '';
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = 'choose...';
-    select.appendChild(placeholder);
-    options.forEach(name => {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      select.appendChild(opt);
-    });
-    if(current && Array.from(select.options).some(opt => opt.value === current)){
-      select.value = current;
-    }
+  ).forEach(select => {
+    populateSelect(select, options);
+  });
+
+  const fastaOptions = options.filter(name => /\.(fasta|fa|fna)(\.gz)?$/i.test(name));
+  document.querySelectorAll(
+    '.unit-card[data-unit="assemble_pairs_reference"] select[name="ref_file"],' +
+    '.unit-card[data-unit="assemble_pairs_sequential"] select[name="ref_file"]'
+  ).forEach(select => {
+    populateSelect(select, fastaOptions);
   });
 }
 
@@ -1278,6 +1333,7 @@ function wireDownloadLinks() {
       if (!name) {
         return;
       }
+      const filename = link.dataset.fname || name;
       try {
         const response = await apiFetch(`/session/${SID}/download/${encodeURIComponent(name)}`);
         if (!response.ok) {
@@ -1287,7 +1343,7 @@ function wireDownloadLinks() {
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         anchor.href = url;
-        anchor.download = name;
+        anchor.download = filename;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -1331,12 +1387,14 @@ function applyStateSnapshot(state) {
     `<span class="chip">${esc(key)}: ${esc(value)}</span>`
   ).join(' ');
   $('#state').innerHTML = chips || '<span class="muted">no state</span>';
-  const artifacts = Object.values(state.artifacts || {}).map(artifact =>
-    `<div>${esc(artifact.name)} - <a href="#" class="art-download" data-art="${esc(artifact.name)}">download</a></div>`
-  ).join('');
+  const artifacts = Object.values(state.artifacts || {}).map(artifact => {
+    const displayName = artifactDownloadName(artifact);
+    const rawName = artifact?.name || '';
+    return `<div>${esc(displayName)} - <a href="#" class="art-download" data-art="${esc(rawName)}" data-fname="${esc(displayName)}">download</a></div>`;
+  }).join('');
   $('#arts').innerHTML = artifacts || '<span class="muted">none</span>';
   window.__SESSION_STATE__ = state;
-  updatePrimerSelects(state);
+  updateAuxFileSelects(state);
   updateStatsChannelOptions(state);
   wireDownloadLinks();
   updateLastLogFromState(state);
@@ -1381,10 +1439,12 @@ function collectUploadedItems(state) {
   const items = [];
   const artifacts = Object.values(state.artifacts || {});
   artifacts.filter(art => art.from_step === -1).forEach(art => {
+    const downloadName = artifactDownloadName(art);
     items.push({
       label: art.path || art.name,
       sub: art.name,
-      download: art.name
+      download: art.name,
+      downloadName
     });
   });
   (state.aux_files || []).forEach(name => {
@@ -1399,7 +1459,8 @@ function collectOutputItems(state) {
     if (typeof art.from_step === 'number' && art.from_step >= 0) {
       const label = art.path || art.name;
       const sub = (art.path && art.path !== art.name) ? art.name : '';
-      items.push({ label, sub, download: art.name });
+      const downloadName = artifactDownloadName(art);
+      items.push({ label, sub, download: art.name, downloadName });
     }
   });
   return items;
@@ -1412,7 +1473,7 @@ function renderArtifactItems(items, emptyText, sid) {
   return items.map(item => {
     const sub = item.sub ? `<div class="artifact-sub">${esc(item.sub)}</div>` : '';
     const download = item.download
-      ? `<a href="#" class="history-download" data-sid="${esc(sid)}" data-art="${esc(item.download)}">download</a>`
+      ? `<a href="#" class="history-download" data-sid="${esc(sid)}" data-art="${esc(item.download)}"${item.downloadName ? ` data-fname="${esc(item.downloadName)}"` : ''}>download</a>`
       : '';
     return `<div class="artifact-item"><div><div class="artifact-label">${esc(item.label)}</div>${sub}</div>${download}</div>`;
   }).join('');
@@ -1719,6 +1780,7 @@ function wireHistoryDownloads() {
       if (!name || !sid) {
         return;
       }
+      const filename = link.dataset.fname || name;
       try {
         const response = await apiFetch(`/session/${sid}/download/${encodeURIComponent(name)}`);
         if (!response.ok) {
@@ -1728,7 +1790,7 @@ function wireHistoryDownloads() {
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement('a');
         anchor.href = url;
-        anchor.download = name;
+        anchor.download = filename;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -1849,7 +1911,8 @@ function makeUnitCard(u){
     });
   });
 
-  if ((u.id || '').toLowerCase() === 'pair_seq') {
+  const unitIdLower = (u.id || '').toLowerCase();
+  if (unitIdLower === 'pair_seq' || unitIdLower.startsWith('assemble_pairs_') || unitIdLower.startsWith('assemblepairs_')) {
     setupPairSeqFieldControls(card);
   }
 
@@ -1872,7 +1935,7 @@ function makeUnitCard(u){
   });
 
   // searchable haystack
-  card.dataset.haystack = [u.id, u.label, ...(u.requires||[]), unitCategory(u.id)].join(' ').toLowerCase();
+  card.dataset.haystack = [u.id, u.label, ...(u.requires||[]), unitCategory(u.id, u.label)].join(' ').toLowerCase();
   return card;
 }
 
@@ -1920,7 +1983,7 @@ async function renderUnits(){
 
   const byCat = {};
   UNITS_META.forEach(u => {
-    const cat = unitCategory(u.id);
+    const cat = unitCategory(u.id, u.label);
     if(!byCat[cat]) byCat[cat] = [];
     byCat[cat].push(makeUnitCard(u));
   });
@@ -2010,6 +2073,16 @@ function validateMaskPrimers(step){
 function validateConsensus(step){
   return {ok:true,msg:'BuildConsensus: ensure BARCODE exists (MaskPrimers extract tag).'};
 }
+function validateAssemblePairs(step){
+  const paramsSnapshot = step.params || (step.card ? collectParams(step.card) : {});
+  const unitId = (step.unit || '').toLowerCase();
+  if(unitId === 'assemble_pairs_reference' || unitId === 'assemble_pairs_sequential'){
+    const refFile = (paramsSnapshot.ref_file || '').trim();
+    const label = unitId === 'assemble_pairs_sequential' ? 'sequential' : 'reference';
+    return refFile ? {ok:true,msg:`AssemblePairs ${label}: OK`} : {ok:false,msg:`AssemblePairs ${label} needs a reference FASTA aux file.`};
+  }
+  return {ok:true,msg:'AssemblePairs: OK'};
+}
 
 function validatePipeline(){
   const steps = selectedSteps();
@@ -2027,6 +2100,7 @@ function validatePipeline(){
     let res = {ok:true,msg:'OK'};
     if(st.unit === 'mask_primers_score' || st.unit === 'mask_primers_align' || st.unit === 'mask_primers_extract') res = validateMaskPrimers(st);
     else if(st.unit === 'build_consensus') res = validateConsensus(st);
+    else if((st.unit || '').startsWith('assemble_pairs_')) res = validateAssemblePairs(st);
     okAll = okAll && res.ok;
     msgs.push(`<div class="${res.ok?'ok':'err'}">• ${esc(st.label)}: ${esc(res.msg)}</div>`);
   }

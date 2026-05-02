@@ -11,7 +11,7 @@ import threading
 import contextvars
 import time
 from datetime import datetime, timezone
-from typing import Optional, Dict, List, Literal, Any
+from typing import Optional, Dict, List, Literal, Any, ClassVar
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Depends
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
@@ -35,7 +35,7 @@ from app.repositories import (
 
 # --------- sanity: ensure pRESTO tools exist on PATH ----------
 import shutil as _shutil
-_needed = ["FilterSeq.py","MaskPrimers.py","CollapseSeq.py","BuildConsensus.py","PairSeq.py"]
+_needed = ["FilterSeq.py","MaskPrimers.py","CollapseSeq.py","BuildConsensus.py","PairSeq.py","AssemblePairs.py"]
 _missing = [t for t in _needed if not _shutil.which(t)]
 if _missing:
     raise RuntimeError(f"pRESTO tools not found on PATH: {', '.join(_missing)}")
@@ -249,6 +249,7 @@ def run_cmd(cmd: List[str], cwd: pathlib.Path, log_file: pathlib.Path):
     NPROC_TOOLS = {
         "FilterSeq.py", "MaskPrimers.py",
         "CollapseSeq.py", "BuildConsensus.py",
+        "PairSeq.py", "AssemblePairs.py",
     }
     final_cmd = list(cmd)
     print('CMD:',final_cmd)
@@ -1251,7 +1252,7 @@ def find_pass_for_prefix(sess_dir: pathlib.Path, prefix: str) -> str:
     for ext in ("fastq.gz","fastq","fasta.gz","fasta"):
         for tag in ("mask-pass","align-primers-pass","primers-pass","extract-pass","score-pass", "quality-pass",
                     "length-pass","missing-pass","repeats-pass","trimqual-pass","maskqual-pass",
-                    "pair-pass",
+                    "pair-pass","assemble-pass",
                     "consensus-pass","consensus-fail",
                     "collapse-unique","collapse-pass","collapse-fail","collapse-failed"):
             p = sess_dir / f"{prefix}_{tag}.{ext}"
@@ -2111,6 +2112,260 @@ class U_MaskPrimersExtract(UnitSpec):
             sess.current[channel] = artifact_name
 
         return StepResult(step_index=idx, unit=self.id, params=params, produced=produced)
+
+class U_AssemblePairsAlign(UnitSpec):
+    assemble_command: ClassVar[str] = "align"
+    default_outdir_prefix: ClassVar[str] = "assemble_pairs_align"
+
+    def _add_command_options(self, cmd: List[str], params: Dict[str, Any], sdir: pathlib.Path) -> None:
+        for param_name, flag in (
+            ("alpha", "--alpha"),
+            ("maxerror", "--maxerror"),
+            ("minlen", "--minlen"),
+            ("maxlen", "--maxlen"),
+        ):
+            value = params.get(param_name)
+            if value not in (None, ""):
+                cmd += [flag, str(value)]
+
+        if str(params.get("scanrev", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--scanrev"]
+
+    def run(self, sess, sdir, params):
+        idx = _next_idx(sess)
+        log_name = (params.get("log") or "").strip()
+        if log_name:
+            if os.path.isabs(log_name) or "/" in log_name or "\\" in log_name:
+                raise HTTPException(400, "log must be a filename (no path separators).")
+            log = sdir / log_name
+        else:
+            log = sdir / f"{idx:03d}_AssemblePairs_{self.assemble_command}.log"
+
+        head_channel = (params.get("head_channel") or "R1").strip().upper()
+        tail_channel = (params.get("tail_channel") or "R2").strip().upper()
+        if head_channel == tail_channel:
+            raise HTTPException(400, "Head/primary and tail/secondary channels must be different.")
+        if head_channel not in ("R1", "R2") or tail_channel not in ("R1", "R2"):
+            raise HTTPException(400, "Head/primary and tail/secondary channels must be R1 or R2.")
+        _assert_channel(sess, head_channel)
+        _assert_channel(sess, tail_channel)
+        seq1 = sdir / sess.artifacts[sess.current[head_channel]].path
+        seq2 = sdir / sess.artifacts[sess.current[tail_channel]].path
+
+        outdir_param = (params.get("outdir") or "").strip()
+        out_files_param = (params.get("out_files") or "").strip()
+        if out_files_param:
+            if outdir_param:
+                raise HTTPException(400, "out_files cannot be used with outdir.")
+            if (params.get("outname") or "").strip():
+                raise HTTPException(400, "out_files cannot be used with outname.")
+            if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+                raise HTTPException(400, "out_files cannot be used with failed.")
+            out_files = [p for p in out_files_param.replace(",", " ").split() if p]
+            if len(out_files) != 1:
+                raise HTTPException(400, "out_files must contain exactly one filename.")
+            out_file = out_files[0]
+            if os.path.isabs(out_file) or ".." in pathlib.Path(out_file).parts:
+                raise HTTPException(400, "out_files must be a relative filename within the session.")
+            (sdir / out_file).parent.mkdir(parents=True, exist_ok=True)
+            outbase_dir = sdir
+        else:
+            if not outdir_param:
+                outdir_param = f"{self.default_outdir_prefix}_{idx:03d}"
+            if os.path.isabs(outdir_param):
+                raise HTTPException(400, "outdir must be a relative path within the session.")
+            outbase_dir = (sdir / outdir_param).resolve()
+            if not str(outbase_dir).startswith(str(sdir.resolve())):
+                raise HTTPException(400, "outdir must be within the session directory.")
+            outbase_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = ["AssemblePairs.py", self.assemble_command, "-1", str(seq1), "-2", str(seq2)]
+        if out_files_param:
+            cmd += ["-o", out_file]
+        else:
+            cmd += ["--outdir", str(outbase_dir)]
+            outname = (params.get("outname") or "").strip()
+            if outname:
+                cmd += ["--outname", outname]
+
+        if str(params.get("failed", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--failed"]
+        if str(params.get("fasta", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--fasta"]
+        if str(params.get("gzip_output", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--gzip-output"]
+
+        delim = (params.get("delim") or "").strip()
+        if delim:
+            parts = [p for p in delim.replace(",", " ").split() if p]
+            if len(parts) != 3:
+                raise HTTPException(400, "delim must contain exactly 3 values.")
+            cmd += ["--delim"] + parts
+
+        coord = (params.get("coord") or "").strip()
+        if coord:
+            allowed = {"illumina", "solexa", "sra", "454", "presto"}
+            if coord not in allowed:
+                raise HTTPException(400, f"Invalid coord value: {coord}.")
+            cmd += ["--coord", coord]
+
+        rc = (params.get("rc") or "").strip()
+        if rc:
+            allowed = {"tail", "head", "both", "none"}
+            if rc not in allowed:
+                raise HTTPException(400, f"Invalid rc value: {rc}.")
+            cmd += ["--rc", rc]
+
+        def normalize_fields(value: Any) -> List[str]:
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+            if value in (None, ""):
+                return []
+            return [x.strip() for x in str(value).replace(",", " ").split() if x.strip()]
+
+        def dedupe(values: List[str]) -> List[str]:
+            seen: set[str] = set()
+            out: List[str] = []
+            for val in values:
+                if val and val not in seen:
+                    seen.add(val)
+                    out.append(val)
+            return out
+
+        selected = set(normalize_fields(params.get("annotation_fields")))
+        fields_1 = dedupe(normalize_fields(params.get("fields_1"))) if "1f" in selected else []
+        fields_2 = dedupe(normalize_fields(params.get("fields_2"))) if "2f" in selected else []
+        if "1f" in selected and not fields_1:
+            fields_1 = ["BARCODE"]
+        if "2f" in selected and not fields_2:
+            fields_2 = ["BARCODE"]
+        if fields_1:
+            cmd += ["--1f"] + fields_1
+        if fields_2:
+            cmd += ["--2f"] + fields_2
+
+        self._add_command_options(cmd, params, sdir)
+
+        start_ts = time.time()
+        run_cmd(cmd, outbase_dir, log)
+
+        if out_files_param:
+            out_rel = out_file
+        else:
+            def _collect_candidates(base_dir: pathlib.Path) -> List[pathlib.Path]:
+                found: List[pathlib.Path] = []
+                for entry in base_dir.iterdir():
+                    if entry.is_file() and "assemble-pass" in entry.name:
+                        try:
+                            if entry.stat().st_mtime >= (start_ts - 1):
+                                found.append(entry)
+                        except Exception:
+                            found.append(entry)
+                if not found:
+                    found = [p for p in base_dir.iterdir() if p.is_file() and "assemble-pass" in p.name]
+                return found
+
+            candidates = _collect_candidates(outbase_dir)
+            if not candidates and outbase_dir != sdir:
+                candidates = _collect_candidates(sdir)
+                if not candidates:
+                    input_dir = seq1.parent.resolve()
+                    if str(input_dir).startswith(str(sdir.resolve())):
+                        candidates = _collect_candidates(input_dir)
+                if candidates:
+                    moved = []
+                    for entry in candidates:
+                        dest = outbase_dir / entry.name
+                        try:
+                            entry.replace(dest)
+                        except Exception:
+                            shutil.copy2(entry, dest)
+                            try:
+                                entry.unlink()
+                            except Exception:
+                                pass
+                        moved.append(dest)
+                    candidates = moved
+
+            if not candidates:
+                raise HTTPException(500, f"Expected output not found for AssemblePairs {self.assemble_command}.")
+            candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+            out_rel = str(pathlib.Path(outdir_param) / candidates[0].name)
+
+        if not (sdir / out_rel).exists():
+            raise HTTPException(500, f"Expected output not found: {out_rel}")
+
+        kind = _detect_kind_from_name(out_rel) or _detect_kind_from_name(seq1.name) or "fastq"
+        name = _with_step("ASSEMBLED", idx)
+        artifact = Artifact(name=name, path=out_rel, kind=kind, channel="R1", from_step=idx)
+        sess.artifacts[artifact.name] = artifact
+        sess.current["R1"] = artifact.name
+        sess.current.pop("R2", None)
+        return StepResult(step_index=idx, unit=self.id, params=params, produced=[artifact])
+
+class U_AssemblePairsJoin(U_AssemblePairsAlign):
+    assemble_command: ClassVar[str] = "join"
+    default_outdir_prefix: ClassVar[str] = "assemble_pairs_join"
+
+    def _add_command_options(self, cmd: List[str], params: Dict[str, Any], sdir: pathlib.Path) -> None:
+        gap = params.get("gap")
+        if gap not in (None, ""):
+            cmd += ["--gap", str(gap)]
+
+class U_AssemblePairsReference(U_AssemblePairsAlign):
+    assemble_command: ClassVar[str] = "reference"
+    default_outdir_prefix: ClassVar[str] = "assemble_pairs_reference"
+
+    def _add_reference_options(self, cmd: List[str], params: Dict[str, Any], sdir: pathlib.Path) -> None:
+        ref_name = (params.get("ref_file") or "").strip()
+        if not ref_name:
+            raise HTTPException(400, f"ref_file is required for AssemblePairs {self.assemble_command}.")
+        if os.path.isabs(ref_name) or ".." in pathlib.Path(ref_name).parts:
+            raise HTTPException(400, "ref_file must be a relative filename within the session.")
+        ref_path = (sdir / ref_name).resolve()
+        if not str(ref_path).startswith(str(sdir.resolve())):
+            raise HTTPException(400, "ref_file must be within the session directory.")
+        if not ref_path.exists():
+            raise HTTPException(400, f"Reference file not found: {ref_name}")
+        cmd += ["-r", str(ref_path)]
+
+        for param_name, flag in (
+            ("minident", "--minident"),
+            ("evalue", "--evalue"),
+            ("maxhits", "--maxhits"),
+        ):
+            value = params.get(param_name)
+            if value not in (None, ""):
+                cmd += [flag, str(value)]
+
+        if str(params.get("fill", "false")).lower() in ("1", "true", "yes", "y"):
+            cmd += ["--fill"]
+
+        aligner = (params.get("aligner") or "").strip()
+        if aligner:
+            allowed = {"blastn", "usearch"}
+            if aligner not in allowed:
+                raise HTTPException(400, f"Invalid aligner value: {aligner}.")
+            cmd += ["--aligner", aligner]
+
+        aligner_exec = (params.get("aligner_exec") or "").strip()
+        if aligner_exec:
+            cmd += ["--exec", aligner_exec]
+
+        dbexec = (params.get("dbexec") or "").strip()
+        if dbexec:
+            cmd += ["--dbexec", dbexec]
+
+    def _add_command_options(self, cmd: List[str], params: Dict[str, Any], sdir: pathlib.Path) -> None:
+        self._add_reference_options(cmd, params, sdir)
+
+class U_AssemblePairsSequential(U_AssemblePairsReference):
+    assemble_command: ClassVar[str] = "sequential"
+    default_outdir_prefix: ClassVar[str] = "assemble_pairs_sequential"
+
+    def _add_command_options(self, cmd: List[str], params: Dict[str, Any], sdir: pathlib.Path) -> None:
+        U_AssemblePairsAlign._add_command_options(self, cmd, params, sdir)
+        self._add_reference_options(cmd, params, sdir)
 
 class U_PairSeq(UnitSpec):
     def run(self, sess, sdir, params):
@@ -3233,6 +3488,209 @@ UNITS: Dict[str, UnitSpec] = {
             "failed":{"type":"checkbox","default":False},
         }
     ),
+    "assemble_pairs_align": U_AssemblePairsAlign(
+        id="assemble_pairs_align", label="AssemblePairs: align", requires=["R1","R2"], group="bulk",
+        params_schema={
+            "head_channel":{"type":"select","label":"Head/primary sequences","options":["R1","R2"],"default":"R1"},
+            "tail_channel":{"type":"select","label":"Tail/secondary sequences","options":["R1","R2"],"default":"R2"},
+            "outdir":{"type":"text","label":"Outdir","placeholder":"assemble_pairs_align_001 (auto if blank)"},
+            "outname":{"type":"text","label":"Outname","placeholder":"leave blank to use input name"},
+            "out_files":{"type":"text","label":"Out files","placeholder":"explicit filename (disables outdir/outname/failed)"},
+            "log":{"type":"text","label":"Log file","placeholder":"optional log filename"},
+            "__section_output":{"type":"section","label":"output considerations"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "gzip_output":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "coord":{"type":"select","label":"Coordinate format","options":[{"value":"","label":"(none)"}, "illumina", "solexa", "sra", "454", "presto"],"default":""},
+            "rc":{"type":"select","label":"Reverse complement","options":[{"value":"","label":"(default)"}, "tail", "head", "both", "none"],"default":""},
+            "annotation_fields":{
+                "type":"checklist",
+                "label":"Annotation fields",
+                "options":[
+                    {"value":"1f","label":"1f","hint":"(copy from head records)"},
+                    {"value":"2f","label":"2f","hint":"(copy from tail records)"},
+                ],
+            },
+            "fields_1":{
+                "type":"select",
+                "label":"Fields for 1f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "fields_2":{
+                "type":"select",
+                "label":"Fields for 2f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "alpha":{"type":"text","label":"Alpha","placeholder":"significance threshold"},
+            "maxerror":{"type":"text","label":"Max error","placeholder":"maximum error rate"},
+            "minlen":{"type":"int","label":"Min overlap length","min":1},
+            "maxlen":{"type":"int","label":"Max overlap length","min":1},
+            "scanrev":{"type":"checkbox","default":False},
+        }
+    ),
+    "assemble_pairs_join": U_AssemblePairsJoin(
+        id="assemble_pairs_join", label="AssemblePairs: join", requires=["R1","R2"], group="bulk",
+        params_schema={
+            "head_channel":{"type":"select","label":"Head/primary sequences","options":["R1","R2"],"default":"R1"},
+            "tail_channel":{"type":"select","label":"Tail/secondary sequences","options":["R1","R2"],"default":"R2"},
+            "outdir":{"type":"text","label":"Outdir","placeholder":"assemble_pairs_join_001 (auto if blank)"},
+            "outname":{"type":"text","label":"Outname","placeholder":"leave blank to use input name"},
+            "out_files":{"type":"text","label":"Out files","placeholder":"explicit filename (disables outdir/outname/failed)"},
+            "log":{"type":"text","label":"Log file","placeholder":"optional log filename"},
+            "__section_output":{"type":"section","label":"output considerations"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "gzip_output":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "coord":{"type":"select","label":"Coordinate format","options":[{"value":"","label":"(none)"}, "illumina", "solexa", "sra", "454", "presto"],"default":""},
+            "rc":{"type":"select","label":"Reverse complement","options":[{"value":"","label":"(default)"}, "tail", "head", "both", "none"],"default":""},
+            "annotation_fields":{
+                "type":"checklist",
+                "label":"Annotation fields",
+                "options":[
+                    {"value":"1f","label":"1f","hint":"(copy from head records)"},
+                    {"value":"2f","label":"2f","hint":"(copy from tail records)"},
+                ],
+            },
+            "fields_1":{
+                "type":"select",
+                "label":"Fields for 1f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "fields_2":{
+                "type":"select",
+                "label":"Fields for 2f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "gap":{"type":"int","label":"Gap","default":0,"min":0},
+        }
+    ),
+    "assemble_pairs_reference": U_AssemblePairsReference(
+        id="assemble_pairs_reference", label="AssemblePairs: reference", requires=["R1","R2"], group="bulk",
+        params_schema={
+            "head_channel":{"type":"select","label":"Head/primary sequences","options":["R1","R2"],"default":"R1"},
+            "tail_channel":{"type":"select","label":"Tail/secondary sequences","options":["R1","R2"],"default":"R2"},
+            "ref_file":{"type":"select","label":"Reference FASTA","options":[],"help":"Select from uploaded aux files"},
+            "outdir":{"type":"text","label":"Outdir","placeholder":"assemble_pairs_reference_001 (auto if blank)"},
+            "outname":{"type":"text","label":"Outname","placeholder":"leave blank to use input name"},
+            "out_files":{"type":"text","label":"Out files","placeholder":"explicit filename (disables outdir/outname/failed)"},
+            "log":{"type":"text","label":"Log file","placeholder":"optional log filename"},
+            "__section_output":{"type":"section","label":"output considerations"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "gzip_output":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "coord":{"type":"select","label":"Coordinate format","options":[{"value":"","label":"(none)"}, "illumina", "solexa", "sra", "454", "presto"],"default":""},
+            "rc":{"type":"select","label":"Reverse complement","options":[{"value":"","label":"(default)"}, "tail", "head", "both", "none"],"default":""},
+            "annotation_fields":{
+                "type":"checklist",
+                "label":"Annotation fields",
+                "options":[
+                    {"value":"1f","label":"1f","hint":"(copy from head records)"},
+                    {"value":"2f","label":"2f","hint":"(copy from tail records)"},
+                ],
+            },
+            "fields_1":{
+                "type":"select",
+                "label":"Fields for 1f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "fields_2":{
+                "type":"select",
+                "label":"Fields for 2f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "minident":{"type":"text","label":"Min identity","placeholder":"0..1"},
+            "evalue":{"type":"text","label":"E-value","placeholder":"minimum E-value"},
+            "maxhits":{"type":"int","label":"Max hits","min":1},
+            "fill":{"type":"checkbox","default":False},
+            "aligner":{"type":"select","label":"Aligner","options":[{"value":"","label":"(default)"}, "blastn", "usearch"],"default":""},
+            "aligner_exec":{"type":"text","label":"Aligner executable","placeholder":"blastn or usearch path/name"},
+            "dbexec":{"type":"text","label":"DB executable","placeholder":"makeblastdb or usearch path/name"},
+        }
+    ),
+    "assemble_pairs_sequential": U_AssemblePairsSequential(
+        id="assemble_pairs_sequential", label="AssemblePairs: sequential", requires=["R1","R2"], group="bulk",
+        params_schema={
+            "head_channel":{"type":"select","label":"Head/primary sequences","options":["R1","R2"],"default":"R1"},
+            "tail_channel":{"type":"select","label":"Tail/secondary sequences","options":["R1","R2"],"default":"R2"},
+            "ref_file":{"type":"select","label":"Reference FASTA","options":[],"help":"Select from uploaded aux files"},
+            "outdir":{"type":"text","label":"Outdir","placeholder":"assemble_pairs_sequential_001 (auto if blank)"},
+            "outname":{"type":"text","label":"Outname","placeholder":"leave blank to use input name"},
+            "out_files":{"type":"text","label":"Out files","placeholder":"explicit filename (disables outdir/outname/failed)"},
+            "log":{"type":"text","label":"Log file","placeholder":"optional log filename"},
+            "__section_output":{"type":"section","label":"output considerations"},
+            "failed":{"type":"checkbox","default":False},
+            "fasta":{"type":"checkbox","default":False},
+            "gzip_output":{"type":"checkbox","default":False},
+            "delim":{"type":"text","placeholder":"e.g. | : , (3 tokens)"},
+            "coord":{"type":"select","label":"Coordinate format","options":[{"value":"","label":"(none)"}, "illumina", "solexa", "sra", "454", "presto"],"default":""},
+            "rc":{"type":"select","label":"Reverse complement","options":[{"value":"","label":"(default)"}, "tail", "head", "both", "none"],"default":""},
+            "annotation_fields":{
+                "type":"checklist",
+                "label":"Annotation fields",
+                "options":[
+                    {"value":"1f","label":"1f","hint":"(copy from head records)"},
+                    {"value":"2f","label":"2f","hint":"(copy from tail records)"},
+                ],
+            },
+            "fields_1":{
+                "type":"select",
+                "label":"Fields for 1f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "fields_2":{
+                "type":"select",
+                "label":"Fields for 2f",
+                "options":[
+                    {"value":"","label":"choose..."},
+                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
+                ],
+                "default":"",
+            },
+            "alpha":{"type":"text","label":"Alpha","placeholder":"significance threshold"},
+            "maxerror":{"type":"text","label":"Max error","placeholder":"maximum error rate"},
+            "minlen":{"type":"int","label":"Min overlap length","min":1},
+            "maxlen":{"type":"int","label":"Max overlap length","min":1},
+            "scanrev":{"type":"checkbox","default":False},
+            "minident":{"type":"text","label":"Min identity","placeholder":"0..1"},
+            "evalue":{"type":"text","label":"E-value","placeholder":"minimum E-value"},
+            "maxhits":{"type":"int","label":"Max hits","min":1},
+            "fill":{"type":"checkbox","default":False},
+            "aligner":{"type":"select","label":"Aligner","options":[{"value":"","label":"(default)"}, "blastn", "usearch"],"default":""},
+            "aligner_exec":{"type":"text","label":"Aligner executable","placeholder":"blastn or usearch path/name"},
+            "dbexec":{"type":"text","label":"DB executable","placeholder":"makeblastdb or usearch path/name"},
+        }
+    ),
     "pair_seq": U_PairSeq(
         id="pair_seq", label="PairSeq (mate pairing)", requires=["R1","R2"], group="bulk",
         params_schema={
@@ -3571,7 +4029,7 @@ def list_units(sid: str, user: Dict[str, str] = Depends(_require_user), db: Sess
         for u in UNITS.values()
     ]
 @app.post("/session/{sid}/upload")
-async def upload_reads(
+def upload_reads(
     sid: str,
     r1: UploadFile = File(...),
     r2: Optional[UploadFile] = File(None),
@@ -3598,7 +4056,7 @@ def _guess_aux_role(name: str) -> str:
     return "other"
 
 @app.post("/session/{sid}/upload-aux")
-async def upload_aux_file(
+def upload_aux_file(
     sid: str,
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
