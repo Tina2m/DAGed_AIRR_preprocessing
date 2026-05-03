@@ -3513,21 +3513,15 @@ UNITS: Dict[str, UnitSpec] = {
                 ],
             },
             "fields_1":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 1f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT",
                 "default":"",
             },
             "fields_2":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 2f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT PRCONS",
                 "default":"",
             },
             "alpha":{"type":"text","label":"Alpha","placeholder":"significance threshold"},
@@ -3562,21 +3556,15 @@ UNITS: Dict[str, UnitSpec] = {
                 ],
             },
             "fields_1":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 1f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT",
                 "default":"",
             },
             "fields_2":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 2f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT PRCONS",
                 "default":"",
             },
             "gap":{"type":"int","label":"Gap","default":0,"min":0},
@@ -3608,21 +3596,15 @@ UNITS: Dict[str, UnitSpec] = {
                 ],
             },
             "fields_1":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 1f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT",
                 "default":"",
             },
             "fields_2":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 2f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT PRCONS",
                 "default":"",
             },
             "minident":{"type":"text","label":"Min identity","placeholder":"0..1"},
@@ -3660,21 +3642,15 @@ UNITS: Dict[str, UnitSpec] = {
                 ],
             },
             "fields_1":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 1f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT",
                 "default":"",
             },
             "fields_2":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 2f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT PRCONS",
                 "default":"",
             },
             "alpha":{"type":"text","label":"Alpha","placeholder":"significance threshold"},
@@ -3711,21 +3687,15 @@ UNITS: Dict[str, UnitSpec] = {
                 ],
             },
             "fields_1":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 1f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT",
                 "default":"",
             },
             "fields_2":{
-                "type":"select",
+                "type":"text",
                 "label":"Fields for 2f",
-                "options":[
-                    {"value":"","label":"choose..."},
-                    "BARCODE","PRIMER","MID","VPRIMER","CPRIMER","UMI"
-                ],
+                "placeholder":"e.g. BARCODE or CONSCOUNT PRCONS",
                 "default":"",
             },
             "act":{"type":"select","label":"Collapse action","options":[{"value":"","label":"(none)"}, "min", "max", "sum", "set", "cat"],"default":""},
